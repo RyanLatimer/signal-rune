@@ -61,6 +61,12 @@ public final class EngineExtensionTest {
         if (!Long.valueOf(321L).equals(expiry.invoke(converted))) throw new AssertionError("Phone expiry start was lost in serialization");
         var inline = org.asamk.signal.manager.util.DataURI.of("data:text/plain;filename=a%2Bb%3B%20%F0%9F%98%83.txt;base64,cGF5bG9hZA==");
         if (!"a+b; 😃.txt".equals(inline.parameter().get("filename")) || !java.util.Arrays.equals(inline.data(), "payload".getBytes(java.nio.charset.StandardCharsets.UTF_8))) throw new AssertionError("Attachment filename/data URI did not round trip through the actual engine parser");
-        System.out.println("Engine extension: five privacy checks, phone expiry serialization, and attachment URI round trip passed");
+        for (var safety : List.of("bad", "1234567890".repeat(6))) {
+            try {
+                new org.asamk.signal.commands.SetIdentityUnverifiedCommand().handleCommand(new Namespace(Map.of("recipient", "+12025550123", "verified-safety-number", safety)), disabled, writer);
+                throw new AssertionError("Unverify must fail closed for malformed safety numbers and unsupported managers");
+            } catch (org.asamk.signal.commands.exceptions.UserErrorException expected) {}
+        }
+        System.out.println("Engine extension: five privacy checks, phone expiry serialization, attachment URI round trip, and two fail-closed unverify checks passed");
     }
 }

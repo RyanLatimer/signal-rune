@@ -12,7 +12,7 @@ args = parser.parse_args()
 out = Path('target/design')
 out.mkdir(parents=True, exist_ok=True)
 results = []
-scenes = ['chat-dark', 'chat-light', 'link-dark', 'link-light', 'settings', 'new-message', 'empty', 'error', 'long-message', 'qr-preview', 'typing', 'receipts', 'pinned', 'archived', 'reply', 'quoted', 'reactions', 'editing', 'message-menu', 'message-details', 'reaction-picker', 'delete-confirm', 'attachments', 'attachment-draft', 'multiline', 'disappearing']
+scenes = ['chat-dark', 'chat-light', 'link-dark', 'link-light', 'settings', 'new-message', 'empty', 'error', 'long-message', 'qr-preview', 'typing', 'receipts', 'pinned', 'archived', 'reply', 'quoted', 'reactions', 'editing', 'message-menu', 'message-details', 'reaction-picker', 'delete-confirm', 'attachments', 'attachment-draft', 'multiline', 'disappearing', 'conversation-details', 'group-details', 'safety-number', 'safety-loading', 'group-member', 'group-confirm', 'new-group']
 for scene in scenes:
     for width, height in [(1120, 760), (760, 560), (1440, 900)]:
         name = f'{scene}-{width}x{height}'
@@ -32,6 +32,18 @@ for scene in scenes:
             critical += ['draft-attachments','remove-attachment-0']
         if scene in ['reply','editing']:
             critical += ['compose-context','cancel-compose-context']
+        if scene in ['conversation-details','group-details']:
+            critical = ['conversation-info-dialog','conversation-name','timer-86400']
+        if scene in ['safety-number','safety-loading']:
+            critical = ['safety-number-dialog']
+        if scene == 'safety-number':
+            critical += ['safety-number-qr','safety-number-digits','verify-safety-number']
+        if scene == 'group-member':
+            critical = ['group-member-dialog']
+        if scene == 'group-confirm':
+            critical = ['group-confirm-dialog','confirm-group-change']
+        if scene == 'new-group':
+            critical = ['new-group-dialog','new-group-name','new-group-recipient','create-group']
         if scene == 'reaction-picker':
             critical = ['reaction-dialog']
         if scene == 'message-details':
@@ -65,6 +77,10 @@ for scene in scenes:
             hsv = cv2.cvtColor(image[y:y+h,x:x+w], cv2.COLOR_BGR2HSV)
             if cv2.countNonZero(cv2.inRange(hsv,(0,100,130),(180,255,255))) < 40:
                 failures.append('Reaction picker has no color emoji glyphs')
+        if scene == 'safety-number':
+            decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(cv2.imread(str(out / f'{name}.png')))
+            if decoded != 'signal-rune-safety-fixture':
+                failures.append('Safety number QR does not contain the expected fixture')
         if scene == 'qr-preview':
             decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(cv2.imread(str(out / f'{name}.png')))
             expected = 'https://example.invalid/signal-rune-design-fixture?payload=' + 'sample-' * 16

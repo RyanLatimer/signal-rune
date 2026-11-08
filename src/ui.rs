@@ -1,3 +1,4 @@
+mod dialogs;
 use crate::{Conversation, Delivery, Message, State};
 use rune::{Color, Cx, El, Icon, ScrollSpec, TextStyle, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, PaletteSeed, TextArea, TextInput};
@@ -211,11 +212,10 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
         b.pinned
             .cmp(&a.pinned)
             .then_with(|| {
-                b.messages
-                    .last()
+                b.last_message()
                     .map(|m| m.timestamp)
                     .unwrap_or(0)
-                    .cmp(&a.messages.last().map(|m| m.timestamp).unwrap_or(0))
+                    .cmp(&a.last_message().map(|m| m.timestamp).unwrap_or(0))
             })
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -234,8 +234,7 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
         let selected = s.selected.as_ref() == Some(&c.id);
         let id = c.id.clone();
         let preview = typing_label(c).unwrap_or_else(|| {
-            c.messages
-                .last()
+            c.last_message()
                 .map(|m| {
                     format!(
                         "{}{}",
@@ -837,10 +836,11 @@ fn conversation(s: &State, t: &Theme, k: &Kit, cx: &mut Cx<State>, layer: &mut V
     }
     let pin_id = c.id.clone();
     let drop_peer = c.id.clone();
+    let details_peer = c.id.clone();
     col().key("conversation").grow(1.).min_w(0.).h_full().on_drop_files(move |s:&mut State,paths,_| s.import_files(&drop_peer,paths))
         .child(row().h(72.).w_full().px(24.).gap(12.).center_y().border_sides([0.,0.,1.,0.],t.line)
             .child(avatar(&c.name,38.,s.conversations.iter().position(|x|x.id==c.id).unwrap_or(0)))
-            .child(col().gap(4.).grow(1.).min_w(0.).child(label(&c.name,15.,600.,t.fg).truncate()).child(label(if c.blocked {"Blocked"} else if c.expiration > 0 {"Disappearing messages enabled"} else if c.group{"Group conversation"}else{"Signal conversation"},11.,400.,t.muted)))
+            .child(col().key("conversation-details").role("button").label("Conversation details").focusable(true).on_press(move |s:&mut State|s.open_conversation_info(&details_peer)).gap(4.).grow(1.).min_w(0.).child(label(&c.name,15.,600.,t.fg).truncate()).child(label(if c.blocked {"Blocked"} else if c.expiration > 0 {"Disappearing messages enabled"} else if c.group{"Group conversation"}else{"Signal conversation"},11.,400.,t.muted)))
             .child(icon_button("pin-conversation", if c.pinned > 0 { "Unpin conversation" } else { "Pin conversation" }, &PIN, t, move |s| s.toggle_pin(&pin_id)))
             .child(icon_button("archive-conversation", if c.archived { "Unarchive conversation" } else { "Archive conversation" }, &ARCHIVE, t, |s| s.archive_selected())))
         .child(col().key("messages").grow(1.).min_h(0.).w_full().scroll(ScrollSpec{stick_bottom:true}).on_at_bottom(|s: &mut State, at| { s.messages_at_bottom = at; if at { s.mark_selected_read(); s.persist(); } }).child(messages))
@@ -850,7 +850,7 @@ fn conversation(s: &State, t: &Theme, k: &Kit, cx: &mut Cx<State>, layer: &mut V
             .child(row().w_full().gap(10.).center_y()
                 .child(el().key("attach-file").role("button").label("Attach a file").focusable(true).size(32.,44.).disabled(s.demo || !s.history_ready || s.editing.is_some()).on_press_tx(|s:&mut State,tx|s.choose_attachment(tx)).center().child(icon(&ATTACH,21.).color(t.muted)))
                 .child(TextArea::new(&s.composer).label("Message").placeholder(if s.demo {"Sample preview · sending is disabled"}else{"Message"}).auto_grow(1,6).on_edit(|s:&mut State|&mut s.composer).on_change(|s: &mut State, tx| s.composer_changed(tx)).on_key(|s: &mut State, ev, tx| s.composer_key(ev,tx)).build(k).min_h(44.).justify_center().key("composer").grow(1.).min_w(0.))
-                .child(el().key("send").role("button").label(if s.editing.is_some() {"Save changes"} else {"Send message"}).focusable(true).size(44.,44.).radius(22.).fill(t.blue).disabled(s.demo || (s.composer.text.trim().is_empty() && c.draft_attachments.is_empty()) || s.bridge.is_none()).on_press_tx(|s:&mut State,tx|s.send(tx)).center().child(icon(&SEND,22.).color(Color::WHITE))))
+                .child(el().key("send").role("button").label(if s.editing.is_some() {"Save changes"} else {"Send message"}).focusable(true).size(44.,44.).radius(22.).fill(t.blue).disabled(s.demo || (s.composer.text.trim().is_empty() && c.draft_attachments.is_empty()) || !s.history_ready).on_press_tx(|s:&mut State,tx|s.send(tx)).center().child(icon(&SEND,22.).color(Color::WHITE))))
             .child(label(if s.demo{"Preview uses fictional messages. Connect your phone to send real messages."}else{"Enter to send · Shift+Enter for a new line"},10.,400.,t.muted).self_center()))
 }
 fn draft_media(c: &Conversation, t: &Theme, k: &Kit) -> El {
@@ -896,6 +896,32 @@ fn draft_media(c: &Conversation, t: &Theme, k: &Kit) -> El {
     }
     files
 }
+fn qr_element(code: &qrcode::QrCode, points: f32, key: &str, name: &str) -> El {
+    let width = code.width();
+    let unit = (points / (width + 8) as f32).floor().max(1.) as usize;
+    let side = (width + 8) * unit;
+    let mut rgba = vec![255u8; side * side * 4];
+    for y in 0..width {
+        for x in 0..width {
+            if code[(x, y)] == qrcode::Color::Dark {
+                for py in (y + 4) * unit..(y + 5) * unit {
+                    for px in (x + 4) * unit..(x + 5) * unit {
+                        rgba[(py * side + px) * 4..(py * side + px) * 4 + 3].fill(0);
+                    }
+                }
+            }
+        }
+    }
+    let pixels = rune::Pixels::new();
+    pixels.set(side as u32, side as u32, rgba);
+    el().key(key)
+        .label(name)
+        .size(points, points)
+        .center()
+        .fill(Color::WHITE)
+        .radius(12.)
+        .child(el().pixels(&pixels).size(side as f32, side as f32))
+}
 fn linking(s: &State, t: &Theme, k: &Kit, compact: bool) -> El {
     let mut qr = el()
         .key("qr-placeholder")
@@ -905,34 +931,12 @@ fn linking(s: &State, t: &Theme, k: &Kit, compact: bool) -> El {
         .center()
         .child(icon(&CHAT, 68.).color(t.blue));
     if let Some(code) = &s.qr {
-        let width = code.width();
-        let unit = (232. / (width + 8) as f32).floor();
-        let side = (width + 8) as f32 * unit;
-        // A raster avoids antialiased seams between adjacent QR modules.
-        let size = side as usize;
-        let mut rgba = vec![255u8; size * size * 4];
-        for y in 0..width {
-            for x in 0..width {
-                if code[(x, y)] == qrcode::Color::Dark {
-                    for py in (y + 4) * unit as usize..(y + 5) * unit as usize {
-                        for px in (x + 4) * unit as usize..(x + 5) * unit as usize {
-                            let offset = (py * size + px) * 4;
-                            rgba[offset..offset + 3].fill(0);
-                        }
-                    }
-                }
-            }
-        }
-        let pixels = rune::Pixels::new();
-        pixels.set(size as u32, size as u32, rgba);
-        qr = el()
-            .key("link-qr")
-            .label("Scan this QR code using Signal Linked Devices on your phone")
-            .size(232., 232.)
-            .center()
-            .fill(Color::WHITE)
-            .radius(12.)
-            .child(el().pixels(&pixels).size(side, side));
+        qr = qr_element(
+            code,
+            232.,
+            "link-qr",
+            "Scan this QR code using Signal Linked Devices on your phone",
+        );
     }
     let mut panel = col()
         .max_w(660.)
@@ -1031,7 +1035,7 @@ fn settings(s: &State, t: &Theme, k: &Kit) -> El {
         .child(label(s.configuration_error.as_deref().unwrap_or("Typing indicators and read receipts follow the privacy settings on your phone. Read state syncs between your linked devices."),12.,400.,t.muted).max_w(570.).wrap())
         .child(label("About Signal Rune",16.,600.,t.fg))
         .child(label("0.1.0 · Experimental native client\nRune + rune-kit · Signal transport by signal-cli\nNot affiliated with Signal Messenger LLC.",13.,400.,t.muted).wrap())
-        .child(label("Messages, drafts, pins and read state are stored in authenticated encrypted history on this device. Account keys and contacts are managed by the Signal engine. Calls, attachments, stories and disappearing-message support are being implemented.",12.,400.,t.muted).max_w(570.).wrap()))
+        .child(label("Messages, drafts, pins and read state are stored in authenticated encrypted history on this device. Account keys and contacts are managed by the Signal engine. Phone history transfer, calls, stories and full media support remain in development.",12.,400.,t.muted).max_w(570.).wrap()))
 }
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let t = Theme::new(s.dark);
@@ -1114,7 +1118,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(label("New message", 22., 600., t.fg))
             .child(
                 label(
-                    "Enter a phone number with country code or a Signal account UUID.",
+                    "Choose a contact, enter an international number or UUID, or paste a Signal group link.",
                     13.,
                     400.,
                     t.muted,
@@ -1135,6 +1139,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 row()
                     .justify_end()
                     .gap(8.)
+                            .child(Button::new("New group").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.start_new_group()).build(&k).key("new-group"))
                     .child(
                         Button::new("Cancel")
                             .variant(ButtonVariant::Ghost)
@@ -1156,6 +1161,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(dialog),
         );
     }
+    dialogs::conversation_dialogs(s, &t, &k, &mut layer);
     message_dialogs(s, &t, &k, &mut layer);
     rune_kit::root(body, layer)
 }
@@ -1526,12 +1532,72 @@ fn demo(s: &mut State) {
             ..Message::default()
         });
     }
+    s.conversations[6].aliases.push("Preview account".into());
     s.conversations[1].unread = 3;
     s.conversations[2].unread = 1;
     s.selected = Some("demo-0".into());
 }
+fn demo_group(s: &mut State) {
+    demo(s);
+    s.choose("demo-1".into());
+    let c = &mut s.conversations[1];
+    c.group = true;
+    c.group_member = true;
+    c.group_description = "A place to make plans for the weekend.".into();
+    c.members = vec!["demo-0".into(), "demo-2".into(), "Preview account".into()];
+    c.group_admins = vec!["Preview account".into()];
+    c.group_link = Some("https://signal.group/#design-fixture".into());
+    s.open_conversation_info("demo-1");
+}
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("conversation-details", |s| {
+        demo(s);
+        s.open_conversation_info("demo-0");
+    }),
+    ("group-details", demo_group),
+    ("group-member", |s| {
+        demo_group(s);
+        s.group_member_panel = Some(("demo-1".into(), "demo-0".into()));
+    }),
+    ("group-confirm", |s| {
+        demo_group(s);
+        s.group_confirmation = Some((
+            "demo-1".into(),
+            crate::model::GroupOperation::Remove("demo-0".into()),
+        ));
+    }),
+    ("new-group", |s| {
+        demo(s);
+        s.start_new_group();
+        s.group_name_input.replace_text("Weekend plans");
+        s.group_participants = vec!["demo-0".into(), "demo-2".into()];
+    }),
+    ("safety-number", |s| {
+        demo(s);
+        s.identity_panel = Some(crate::model::IdentityPanel {
+            peer: "demo-0".into(),
+            identity: Some(crate::model::IdentityInfo {
+                safety_number: "1234567890".repeat(6),
+                scannable: Some(b"signal-rune-safety-fixture".to_vec()),
+                verified: false,
+                trusted: true,
+            }),
+            loading: false,
+            saving: false,
+            error: None,
+        });
+    }),
+    ("safety-loading", |s| {
+        demo(s);
+        s.identity_panel = Some(crate::model::IdentityPanel {
+            peer: "demo-0".into(),
+            identity: None,
+            loading: true,
+            saving: false,
+            error: None,
+        });
+    }),
     ("attachments", |s| {
         demo(s);
         let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));

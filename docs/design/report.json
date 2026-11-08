@@ -622,5 +622,173 @@
       900
     ],
     "failures": []
+  },
+  {
+    "scene": "conversation-details",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "conversation-details",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "conversation-details",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-details",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-details",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-details",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "safety-number",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "safety-number",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "safety-number",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "safety-loading",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "safety-loading",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "safety-loading",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-member",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-member",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-member",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-confirm",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-confirm",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "group-confirm",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "new-group",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "new-group",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "new-group",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
   }
 ]

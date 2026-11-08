@@ -1,4 +1,5 @@
 mod actions;
+mod conversations;
 mod expiration;
 mod media;
 mod model;
@@ -24,6 +25,12 @@ enum Pending {
     Receipt(String, Vec<(u64, u64)>),
     Send(String, u64),
     Action(u64),
+    Identities(String),
+    VerifyIdentity(String),
+    ConversationUpdate(String, model::ConversationChange),
+    GroupUpdate(String),
+    CreatedGroup,
+    JoinedGroup,
 }
 pub struct State {
     bridge: Option<transport::Bridge>,
@@ -77,6 +84,16 @@ pub struct State {
     media_failures: HashMap<String, String>,
     media_cache: Option<rune::ImageCache>,
     media_images: HashMap<String, rune::Image>,
+    conversation_info: Option<String>,
+    conversation_name: TextEdit,
+    identity_panel: Option<model::IdentityPanel>,
+    group_member_input: TextEdit,
+    group_description_input: TextEdit,
+    group_member_panel: Option<(String, String)>,
+    group_confirmation: Option<(String, model::GroupOperation)>,
+    new_group: bool,
+    group_name_input: TextEdit,
+    group_participants: Vec<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -132,6 +149,16 @@ impl Default for State {
             media_failures: HashMap::new(),
             media_cache: None,
             media_images: HashMap::new(),
+            conversation_info: None,
+            conversation_name: TextEdit::new(""),
+            identity_panel: None,
+            group_member_input: TextEdit::new(""),
+            group_description_input: TextEdit::new(""),
+            group_member_panel: None,
+            group_confirmation: None,
+            new_group: false,
+            group_name_input: TextEdit::new(""),
+            group_participants: vec![],
         }
     }
 }
@@ -158,6 +185,12 @@ impl State {
         Some(id)
     }
     fn connect(&mut self) {
+        if let Some(panel) = &mut self.identity_panel {
+            panel.loading = false;
+            panel.saving = false;
+            panel.error =
+                Some("Reconnecting. Refresh the safety number when Signal is connected.".into());
+        }
         self.stop_typing();
         self.engine_configuration = None;
         self.bridge = None;
@@ -244,6 +277,11 @@ impl State {
     }
     fn new_conversation(&mut self) {
         let raw = self.recipient.text.trim();
+        if raw.starts_with("https://signal.group/#") {
+            let uri = raw.to_owned();
+            self.request("joinGroup", json!({"uri":uri}), Pending::JoinedGroup);
+            return;
+        }
         let Some(id) = model::recipient_id(raw).or_else(|| {
             self.conversations
                 .iter()
@@ -342,6 +380,9 @@ impl State {
                 return;
             };
             if v.get("error").is_some() {
+                if self.identity_error(&p) {
+                    return;
+                }
                 // Do not put server payloads (which can contain message text/keys) into logs or screenshots.
                 if matches!(p, Pending::Configuration) {
                     self.engine_configuration = None;
@@ -382,6 +423,13 @@ impl State {
             }
             let r = &v["result"];
             match p {
+                Pending::Identities(peer) => self.identity_result(&peer, r),
+                Pending::VerifyIdentity(peer) => self.request_identity(&peer),
+                Pending::ConversationUpdate(peer, change) => {
+                    self.conversation_updated(&peer, change)
+                }
+                Pending::GroupUpdate(peer) => self.group_updated(&peer, r),
+                Pending::CreatedGroup | Pending::JoinedGroup => self.group_joined(r),
                 Pending::Accounts => {
                     if let Some(account) = r
                         .as_array()
@@ -572,6 +620,13 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
                 changed = true;
             }
             Some(transport::Event::Stopped) => {
+                if let Some(panel) = &mut s.identity_panel {
+                    panel.loading = false;
+                    panel.saving = false;
+                    panel.error = Some(
+                        "Signal disconnected. Refresh the safety number after reconnecting.".into(),
+                    );
+                }
                 s.status = "Disconnected".into();
                 s.error = Some("Signal engine stopped. Retry connection in Settings.".into());
                 s.bridge = None;
@@ -598,6 +653,16 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
 fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     match ev.key {
         rune::Key::Escape => {
+            if s.new_group {
+                s.new_group = false;
+                return true;
+            }
+            if s.group_confirmation.take().is_some() || s.group_member_panel.take().is_some() {
+                return true;
+            }
+            if s.identity_panel.take().is_some() || s.conversation_info.take().is_some() {
+                return true;
+            }
             if s.message_context.take().is_some()
                 || s.reaction_target.take().is_some()
                 || s.message_details.take().is_some()
@@ -828,6 +893,34 @@ mod tests {
         rt.frame(1. / 60.);
         assert!(rt.state.reply_to.is_some());
         assert!(rt.find("compose-context").is_some());
+    }
+    #[test]
+    fn native_group_details_can_scroll_to_every_control_at_minimum_size() {
+        let mut s = State::default();
+        ui::SCENES
+            .iter()
+            .find(|(name, _)| *name == "group-details")
+            .unwrap()
+            .1(&mut s);
+        let mut rt = Runtime::new(s, ui::view, (760., 560.), Env::default());
+        for _ in 0..60 {
+            rt.frame(1. / 60.);
+        }
+        rt.update(|_, tx| tx.scroll_into_view("block-conversation"));
+        for _ in 0..120 {
+            rt.frame(1. / 60.);
+        }
+        let target = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("block-conversation"))
+            .unwrap();
+        assert!(
+            target.visible[3] > 20.,
+            "Group controls must be reachable by scrolling: {:?}",
+            target.visible
+        );
+        assert!(target.rect[1] >= 0. && target.rect[1] + target.rect[3] <= 560.);
     }
     #[test]
     fn preview_and_offline_send_preserve_draft() {

@@ -68,6 +68,7 @@ impl State {
             }
             if expired.iter().any(|(id, _)| id == &c.id) {
                 c.recount_unread();
+                c.clear_deleted_edit_draft();
             }
         }
         if expired.is_empty() {

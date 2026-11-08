@@ -308,3 +308,41 @@ fn phone_note_to_self_sync_has_no_destination_but_still_routes_correctly() {
     assert_eq!(notes.messages[0].body, "note");
     assert!(notes.messages[0].outgoing);
 }
+#[test]
+fn edited_outbox_reuses_its_wire_timestamp_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, requests) = state();
+    let at = model::now_ms() - 1000;
+    own(&mut s, at);
+    s.history_ready = false;
+    s.store = Some(storage::Worker::test(dir.path(), "self"));
+    pump(&mut s, |s| {
+        s.history_ready && s.generation > 0 && s.saved_generation == s.generation
+    });
+    for _ in requests.try_iter() {}
+    assert!(s.queue_action(
+        "peer",
+        1,
+        ActionKind::Edit {
+            body: "corrected text".into(),
+            quote: None
+        }
+    ));
+    let original = s.sync_ledger.actions[0].id;
+    pump(&mut s, |s| {
+        s.pending.values().any(|p| matches!(p, Pending::Action(_)))
+    });
+    let first = requests.try_iter().find(|r| r["method"] == "send").unwrap();
+    assert_eq!(first["params"]["timestamp"], original);
+    drop(s);
+    let (mut restored, requests) = state();
+    restored.history_ready = false;
+    restored.store = Some(storage::Worker::test(dir.path(), "self"));
+    pump(&mut restored, |s| {
+        s.pending.values().any(|p| matches!(p, Pending::Action(_)))
+    });
+    let retry = requests.try_iter().find(|r| r["method"] == "send").unwrap();
+    assert_eq!(retry["params"]["timestamp"], original);
+    assert_eq!(retry["params"]["editTimestamp"], at);
+    assert_eq!(retry["params"]["message"], "corrected text");
+}

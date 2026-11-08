@@ -236,7 +236,14 @@ impl State {
         }
     }
     pub(crate) fn mark_selected_read(&mut self) {
-        if !self.window_focused || self.settings || self.new_chat || !self.messages_at_bottom {
+        if !self.window_focused
+            || self.settings
+            || self.new_chat
+            || self.new_group
+            || self.conversation_info.is_some()
+            || self.identity_panel.is_some()
+            || !self.messages_at_bottom
+        {
             return;
         }
         let Some(c) = self
@@ -481,6 +488,15 @@ impl State {
                 }
             }
             for m in &mut c.messages {
+                if m.outgoing
+                    && m.expires_at.is_none()
+                    && matches!(
+                        m.delivery,
+                        Delivery::Sent | Delivery::Delivered | Delivery::Read
+                    )
+                {
+                    m.start_expiration(model::now_ms());
+                }
                 if !m.outgoing
                     && self
                         .sync_ledger
@@ -583,7 +599,10 @@ impl State {
         };
         if self.composer.text.trim().is_empty()
             || !self.window_focused
+            || self.conversation_info.is_some()
+            || self.identity_panel.is_some()
             || !self.preferences.typing_indicators
+            || self.new_group
             || !self
                 .engine_configuration
                 .as_ref()
@@ -689,6 +708,17 @@ impl State {
             .flat_map(|c| &c.messages)
             .filter(|m| m.outgoing && m.delivery == Delivery::Pending && m.timestamp >= wall)
             .map(|m| m.timestamp)
+            .chain(
+                self.sync_ledger
+                    .actions
+                    .iter()
+                    .filter(|a| {
+                        matches!(a.kind, model::ActionKind::Edit { .. })
+                            && !a.failed
+                            && a.id >= wall
+                    })
+                    .map(|a| a.id),
+            )
             .min()
         {
             tx.wake_after(Duration::from_millis(
@@ -815,6 +845,38 @@ impl State {
             merged.aliases.dedup();
             merged.blocked = item["isBlocked"].as_bool().unwrap_or(false);
             merged.expiration = item["messageExpirationTime"].as_u64().unwrap_or(0) as u32;
+            if group {
+                let people = |value: &Value| -> Vec<String> {
+                    value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|m| m.as_str().or(m["uuid"].as_str()).or(m["number"].as_str()))
+                        .map(str::to_owned)
+                        .collect()
+                };
+                merged.group_description =
+                    item["description"].as_str().unwrap_or_default().to_owned();
+                merged.group_admins = people(&item["admins"]);
+                merged.group_pending = people(&item["pendingMembers"]);
+                merged.group_requesting = people(&item["requestingMembers"]);
+                merged.group_banned = people(&item["banned"]);
+                merged.group_link = item["groupInviteLink"].as_str().map(str::to_owned);
+                merged.group_member = item["isMember"].as_bool().unwrap_or(false);
+                merged.group_terminated = item["isTerminated"].as_bool().unwrap_or(false);
+                merged.permission_edit = item["permissionEditDetails"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                merged.permission_add = item["permissionAddMember"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                merged.permission_send = item["permissionSendMessage"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+            }
             merged.members = item["members"]
                 .as_array()
                 .map(|members| {
@@ -831,9 +893,6 @@ impl State {
                 }
             }
             merged.sort_messages();
-            merged.messages.dedup_by(|a, b| {
-                a.timestamp == b.timestamp && a.outgoing == b.outgoing && a.sender == b.sender
-            });
             merged.recount_unread();
             if self.account.as_deref() == Some(&merged.id) {
                 merged.name = "Note to Self".into();
@@ -845,8 +904,16 @@ impl State {
             .iter()
             .flat_map(|c| c.aliases.iter().map(|a| (a.clone(), c.id.clone())))
             .collect();
+        let mut message_ids = HashMap::new();
         for c in &mut self.conversations {
-            for member in &mut c.members {
+            for member in c
+                .members
+                .iter_mut()
+                .chain(&mut c.group_admins)
+                .chain(&mut c.group_pending)
+                .chain(&mut c.group_requesting)
+                .chain(&mut c.group_banned)
+            {
                 if let Some(id) = aliases.get(member) {
                     *member = id.clone();
                 }
@@ -861,8 +928,57 @@ impl State {
                     quote.author = id.clone();
                 }
             }
+            message_ids.extend(c.reconcile_duplicates());
+            if let Some(id) = c.draft_edit
+                && let Some(new) = message_ids.get(&id)
+            {
+                c.draft_edit = Some(*new);
+            }
+        }
+        if let Some(id) = self.editing
+            && let Some(new) = message_ids.get(&id)
+        {
+            self.editing = Some(*new);
+        }
+        for pending in self.pending.values_mut() {
+            match pending {
+                Pending::Send(_, id) => {
+                    if let Some(new) = message_ids.get(id) {
+                        *id = *new;
+                    }
+                }
+                Pending::Receipt(_, messages) => {
+                    for (id, _) in messages {
+                        if let Some(new) = message_ids.get(id) {
+                            *id = *new;
+                        }
+                    }
+                }
+                Pending::Identities(peer)
+                | Pending::VerifyIdentity(peer)
+                | Pending::ConversationUpdate(peer, _)
+                | Pending::GroupUpdate(peer) => {
+                    if let Some(id) = aliases.get(peer) {
+                        *peer = id.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(peer) = &mut self.conversation_info
+            && let Some(id) = aliases.get(peer)
+        {
+            *peer = id.clone();
+        }
+        if let Some(panel) = &mut self.identity_panel
+            && let Some(id) = aliases.get(&panel.peer)
+        {
+            panel.peer = id.clone();
         }
         for action in &mut self.sync_ledger.actions {
+            if let Some(new) = message_ids.get(&action.message) {
+                action.message = *new;
+            }
             if let Some(id) = aliases.get(&action.conversation) {
                 action.conversation = id.clone();
             }
@@ -882,6 +998,15 @@ impl State {
             }
         }
         for task in self.media_tasks.values_mut() {
+            match task {
+                crate::media::Task::Download(_, message, _)
+                | crate::media::Task::Send(_, message) => {
+                    if let Some(new) = message_ids.get(message) {
+                        *message = *new;
+                    }
+                }
+                _ => {}
+            }
             let peer = match task {
                 crate::media::Task::Draft(peer)
                 | crate::media::Task::Download(peer, _, _)
@@ -1133,6 +1258,60 @@ mod tests {
         s.conversations.push(group);
         s.receive(&json!({"method":"receive","params":{"envelope":{"sourceUuid":"outsider","receiptMessage":{"isRead":true,"timestamps":[50]}}}}), &mut Tx::default());
         assert_eq!(s.conversations[1].messages[0].delivery, Delivery::Sent);
+    }
+    #[test]
+    fn alias_merge_keeps_deletion_tombstones_and_cancels_queued_edits() {
+        let (mut s, _) = connected();
+        s.conversations.clear();
+        let mut phone = Conversation::new("+12025550123".into(), "Phone".into(), false);
+        phone.messages.push(Message {
+            id: 1,
+            timestamp: 100,
+            sender: phone.id.clone(),
+            body: "private content".into(),
+            ..Default::default()
+        });
+        let mut uuid = Conversation::new("peer-aci".into(), "Peer".into(), false);
+        uuid.messages.push(Message {
+            id: 2,
+            timestamp: 100,
+            sender: uuid.id.clone(),
+            hidden: true,
+            tombstone_timestamps: vec![200],
+            ..Default::default()
+        });
+        uuid.draft_edit = Some(2);
+        uuid.draft = "private edit".into();
+        s.sync_ledger.actions.push(model::QueuedAction {
+            id: 300,
+            conversation: uuid.id.clone(),
+            message: 2,
+            target: 100,
+            author: uuid.id.clone(),
+            kind: model::ActionKind::Edit {
+                body: "private edit".into(),
+                quote: None,
+            },
+            failed: false,
+        });
+        s.conversations = vec![phone, uuid];
+        s.merge_contacts(
+            &[json!({"uuid":"peer-aci","number":"+12025550123","name":"Peer"})],
+            false,
+        );
+        let c = &s.conversations[0];
+        assert_eq!(c.messages.len(), 1);
+        assert!(c.messages[0].hidden);
+        assert!(c.messages[0].body.is_empty());
+        assert!(c.messages[0].matches_timestamp(200));
+        assert!(c.draft.is_empty() && c.draft_edit.is_none());
+        assert!(s.sync_ledger.actions.is_empty());
+        s.receive(
+            &incoming("peer-aci", 100, "private content"),
+            &mut Tx::default(),
+        );
+        assert!(s.conversations[0].messages[0].hidden);
+        assert!(s.conversations[0].messages[0].body.is_empty());
     }
     fn pump(s: &mut State, condition: impl Fn(&State) -> bool) {
         let until = std::time::Instant::now() + Duration::from_secs(3);

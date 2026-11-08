@@ -241,6 +241,31 @@ impl State {
             {
                 continue;
             }
+            // Keep actions for one message ordered across reconnects. A reaction retry
+            // must finish before a newer replacement is transmitted.
+            if self
+                .pending
+                .values()
+                .filter_map(|p| {
+                    if let Pending::Action(id) = p {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .any(|id| {
+                    self.sync_ledger.actions.iter().any(|a| {
+                        &a.id == id
+                            && a.conversation == action.conversation
+                            && a.message == action.message
+                    })
+                })
+            {
+                continue;
+            }
+            if matches!(action.kind, ActionKind::Edit { .. }) && action.id >= model::now_ms() {
+                continue;
+            }
             let Some(c) = self
                 .conversations
                 .iter()
@@ -268,6 +293,7 @@ impl State {
                 ActionKind::Edit { body, quote } => {
                     params["message"] = json!(body);
                     params["editTimestamp"] = json!(action.target);
+                    params["timestamp"] = json!(action.id);
                     if let Some(q) = quote {
                         params["quoteTimestamp"] = json!(q.timestamp);
                         params["quoteAuthor"] = json!(q.author);
@@ -559,6 +585,27 @@ impl State {
                 }
             }
             c.recount_unread();
+            c.clear_deleted_edit_draft();
+        }
+        self.sync_ledger.actions.retain(|a| {
+            self.conversations
+                .iter()
+                .filter(|c| c.matches(&a.conversation))
+                .flat_map(|c| &c.messages)
+                .any(|m| m.id == a.message && !m.hidden && !m.deleted)
+        });
+        if let Some(id) = self.editing
+            && self
+                .selected
+                .as_ref()
+                .and_then(|peer| self.conversations.iter().find(|c| c.id == *peer))
+                .is_some_and(|c| {
+                    c.messages
+                        .iter()
+                        .any(|m| m.id == id && (m.hidden || m.deleted))
+                })
+        {
+            self.cancel_edit();
         }
         self.purge_tombstone_mutations();
     }

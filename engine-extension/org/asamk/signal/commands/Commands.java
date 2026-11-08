@@ -22,6 +22,7 @@ public class Commands {
         addCommand(new HangupCallCommand());
         addCommand(new GetAttachmentCommand());
         addCommand(new GetClientStateCommand());
+        addCommand(new SetIdentityUnverifiedCommand());
         addCommand(new GetAvatarCommand());
         addCommand(new GetStickerCommand());
         addCommand(new GetUserStatusCommand());

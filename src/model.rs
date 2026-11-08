@@ -75,6 +75,95 @@ pub struct EditVersion {
     pub receipts: BTreeMap<String, Delivery>,
 }
 impl Message {
+    fn merge_duplicate(&mut self, other: Self) {
+        let old = self.clone();
+        let same = old.latest_timestamp() == other.latest_timestamp();
+        if other.latest_timestamp() > old.latest_timestamp() {
+            *self = other.clone();
+        }
+        self.id = old.id.min(other.id);
+        if same {
+            self.read = old.read || other.read;
+            self.read_receipt_sent = old.read_receipt_sent || other.read_receipt_sent;
+            self.delivery.advance(other.delivery);
+            for (sender, status) in &other.receipts {
+                self.receipts
+                    .entry(sender.clone())
+                    .or_default()
+                    .advance(*status);
+            }
+        }
+        self.hidden = old.hidden || other.hidden;
+        self.deleted = old.deleted || other.deleted;
+        self.expires_at = old.expires_at.into_iter().chain(other.expires_at).min();
+        self.expires_in = [old.expires_in, other.expires_in]
+            .into_iter()
+            .filter(|n| *n > 0)
+            .min()
+            .unwrap_or(0);
+        self.tombstone_timestamps.extend(
+            old.tombstone_timestamps
+                .iter()
+                .chain(&other.tombstone_timestamps),
+        );
+        for version in [&old, &other] {
+            self.tombstone_timestamps.push(version.latest_timestamp());
+            for a in &version.attachments {
+                if let Some(current) = self
+                    .attachments
+                    .iter_mut()
+                    .find(|current| current.id == a.id && current.name == a.name)
+                    && current.media_id.is_none()
+                {
+                    current.media_id = a.media_id.clone();
+                }
+            }
+            for historical in &version.edit_history {
+                if let Some(current) = self
+                    .edit_history
+                    .iter_mut()
+                    .find(|v| v.timestamp == historical.timestamp)
+                {
+                    current.delivery.advance(historical.delivery);
+                    for (sender, status) in &historical.receipts {
+                        current
+                            .receipts
+                            .entry(sender.clone())
+                            .or_default()
+                            .advance(*status);
+                    }
+                } else if historical.timestamp < self.latest_timestamp() {
+                    self.edit_history.push(historical.clone());
+                }
+            }
+            if version.latest_timestamp() < self.latest_timestamp()
+                && !self
+                    .edit_history
+                    .iter()
+                    .any(|v| v.timestamp == version.latest_timestamp())
+            {
+                self.edit_history.push(EditVersion {
+                    timestamp: version.latest_timestamp(),
+                    body: version.body.clone(),
+                    quote: version.quote.clone(),
+                    delivery: version.delivery,
+                    receipts: version.receipts.clone(),
+                });
+            }
+        }
+        self.tombstone_timestamps.sort_unstable();
+        self.tombstone_timestamps.dedup();
+        self.edit_history.sort_by_key(|v| v.timestamp);
+        if self.hidden || self.deleted {
+            self.body.clear();
+            self.quote = None;
+            self.attachments.clear();
+            self.reactions.clear();
+            self.edit_history.clear();
+            self.read = true;
+            self.read_receipt_sent = true;
+        }
+    }
     pub fn start_expiration(&mut self, at: u64) {
         if self.expires_in == 0 || self.hidden {
             return;
@@ -96,6 +185,7 @@ impl Message {
             && !self.deleted
             && !self.hidden
             && !self.body.is_empty()
+            && self.attachments.is_empty()
             && !matches!(self.delivery, Delivery::Pending | Delivery::Failed)
             && self.edit_history.len() < 10
             && (note_to_self || now_ms().saturating_sub(self.timestamp) < 86_400_000)
@@ -166,8 +256,53 @@ pub struct Conversation {
     pub expiration: u32,
     pub expiration_updated_at: u64,
     pub members: Vec<String>,
+    pub group_description: String,
+    pub group_admins: Vec<String>,
+    pub group_pending: Vec<String>,
+    pub group_requesting: Vec<String>,
+    pub group_banned: Vec<String>,
+    pub group_link: Option<String>,
+    pub group_member: bool,
+    pub group_terminated: bool,
+    pub permission_edit: String,
+    pub permission_add: String,
+    pub permission_send: String,
     #[serde(skip)]
     pub typing: HashMap<String, TypingPresence>,
+}
+#[derive(Clone)]
+pub enum ConversationChange {
+    Block(bool),
+    Expiration(u32),
+    Rename(String),
+}
+#[derive(Clone)]
+pub enum GroupOperation {
+    Add(String),
+    Remove(String),
+    Promote(String),
+    Demote(String),
+    Ban(String),
+    Unban(String),
+    Description(String),
+    Link(&'static str),
+    ResetLink,
+    Permission(&'static str, &'static str),
+    Leave,
+}
+#[derive(Clone)]
+pub struct IdentityInfo {
+    pub safety_number: String,
+    pub scannable: Option<Vec<u8>>,
+    pub verified: bool,
+    pub trusted: bool,
+}
+pub struct IdentityPanel {
+    pub peer: String,
+    pub identity: Option<IdentityInfo>,
+    pub loading: bool,
+    pub saving: bool,
+    pub error: Option<String>,
 }
 impl Conversation {
     pub fn new(id: String, name: String, group: bool) -> Self {
@@ -194,6 +329,39 @@ impl Conversation {
     }
     pub fn sort_messages(&mut self) {
         self.messages.sort_by_key(|m| (m.timestamp, m.id));
+    }
+    pub fn reconcile_duplicates(&mut self) -> HashMap<u64, u64> {
+        self.sort_messages();
+        let mut unique: Vec<Message> = Vec::new();
+        let mut indexes = HashMap::new();
+        let mut remap = HashMap::new();
+        for message in std::mem::take(&mut self.messages) {
+            let identity = (message.timestamp, message.outgoing, message.sender.clone());
+            if let Some(index) = indexes.get(&identity).copied() {
+                let previous: &mut Message = &mut unique[index];
+                let old = message.id;
+                previous.merge_duplicate(message);
+                remap.insert(old, previous.id);
+            } else {
+                indexes.insert(identity, unique.len());
+                unique.push(message);
+            }
+        }
+        self.messages = unique;
+        self.recount_unread();
+        remap
+    }
+    pub fn clear_deleted_edit_draft(&mut self) {
+        if self.draft_edit.is_some_and(|id| {
+            self.messages
+                .iter()
+                .any(|m| m.id == id && (m.hidden || m.deleted))
+        }) {
+            let backup = self.draft_backup.take().unwrap_or_default();
+            self.draft = backup.body;
+            self.draft_quote = backup.quote;
+            self.draft_edit = None;
+        }
     }
     pub fn apply_receipt(&mut self, sender: &str, timestamps: &[u64], delivery: Delivery) -> bool {
         let mut changed = false;
