@@ -16,7 +16,7 @@ Open [GitHub Actions → Desktop builds](https://github.com/RyanLatimer/signal-r
 - **Windows x64**: portable `.zip`; extract the entire folder and launch `signal-rune.exe`.
 - **Linux x64**: `.tar.gz`; extract the entire folder and run `./signal-rune`. Requires libxkbcommon, Wayland client libraries and a Vulkan-capable driver (Mesa software rendering works).
 
-Archives bundle signal-cli 0.14.10 and a Java 25 runtime. Keep the extracted bundle intact; macOS stores its runtime inside the `.app`, and Windows/Linux keep it beside the executable. Builds are unsigned (macOS ad-hoc signed), not notarized. Intel macOS and Windows ARM are intentionally excluded. There is no automatic updater yet.
+Archives bundle signal-cli 0.14.10 with the source-available Signal Rune privacy extension and a Java 25 runtime. Keep the extracted bundle intact; macOS stores its runtime inside the `.app`, and Windows/Linux keep it beside the executable. Builds are unsigned (macOS ad-hoc signed), not notarized. Intel macOS and Windows ARM are intentionally excluded. There is no automatic updater yet.
 
 ## Link your phone
 
@@ -40,13 +40,21 @@ sudo apt-get install libxkbcommon-dev libwayland-dev mesa-vulkan-drivers
 cargo build --locked
 ```
 
-For a development build install [signal-cli 0.14.10](https://github.com/AsamK/signal-cli/releases/tag/v0.14.10) and Java 25, then run:
+For a development build install [signal-cli 0.14.10](https://github.com/AsamK/signal-cli/releases/tag/v0.14.10) and Java 25. To enable synchronized typing privacy, compile the bundled extension against that distribution using a Java 25 JDK:
+
+```sh
+JAVA_HOME=/path/to/jdk25 python3 scripts/extend_engine.py /path/to/signal-cli-0.14.10
+```
+
+Then run:
 
 ```sh
 # If signal-cli is not already on PATH:
 export SIGNAL_RUNE_CLI=/absolute/path/to/signal-cli-0.14.10/bin/signal-cli
 cargo run --locked
 ```
+
+An unextended external engine can still link and exchange messages, but typing remains paused because its synchronized privacy setting cannot be verified. Packaged builds already include the extension and need no development tools.
 
 On Windows set `SIGNAL_RUNE_CLI` to its `signal-cli.bat` launcher. Bundled packages locate their engine and Java automatically. `SIGNAL_RUNE_CLI` explicitly overrides the bundled engine.
 

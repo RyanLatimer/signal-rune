@@ -62,4 +62,6 @@ The repository and CI artifacts can be public during development. They must not 
 
 The checked-in design report and representative screenshots use fictional data only. CI evidence belongs to each run's exact commit and is available as the `design-evidence` artifact. Neither automated layout checks nor these manual inspections establish exact visual parity with Signal Desktop.
 
-The active, versioned feature inventory is [PARITY.md](PARITY.md). Current local foundation validation: 27 tests, strict Clippy, and 42 native renders passed. Full client parity remains in progress.
+The active, versioned feature inventory is [PARITY.md](PARITY.md). Current local foundation validation: 31 Rust tests plus five engine-extension privacy checks, strict Clippy, and 42 native renders passed. Full client parity remains in progress.
+
+The Linux restart test exposed a retained lock descriptor; explicit release on history teardown and retained-descriptor/worker-restart regression tests now cover that case. The source-available engine extension enforces the phone typing setting at command execution and lets privacy-suppressed receipts complete their linked read sync.

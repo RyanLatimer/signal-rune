@@ -50,6 +50,8 @@ impl State {
     }
     pub(crate) fn begin_sync(&mut self) {
         self.status = "Synchronizing…".into();
+        self.request("getClientState", json!({}), Pending::Configuration);
+        self.configuration_due = self.clock + 15.;
         self.request("subscribeReceive", json!({}), Pending::Subscribe);
         self.request("listContacts", json!({}), Pending::Contacts);
         self.request("listGroups", json!({}), Pending::Groups);
@@ -402,6 +404,13 @@ impl State {
         }
     }
     fn receive_typing(&mut self, envelope: &Value, typing: &Value, tx: &mut Tx) {
+        if !self
+            .engine_configuration
+            .as_ref()
+            .is_some_and(|c| c.typing_indicators)
+        {
+            return;
+        }
         let Some(sender) = model::source(envelope) else {
             return;
         };
@@ -438,6 +447,14 @@ impl State {
         }
     }
     fn typing_request(&mut self, peer: &str, stop: bool) {
+        if !stop
+            && !self
+                .engine_configuration
+                .as_ref()
+                .is_some_and(|c| c.typing_indicators)
+        {
+            return;
+        }
         let Some(c) = self.conversations.iter().find(|c| c.id == peer) else {
             return;
         };
@@ -466,6 +483,10 @@ impl State {
         if self.composer.text.trim().is_empty()
             || !self.window_focused
             || !self.preferences.typing_indicators
+            || !self
+                .engine_configuration
+                .as_ref()
+                .is_some_and(|c| c.typing_indicators)
         {
             self.stop_typing();
             return;
@@ -495,6 +516,20 @@ impl State {
     }
     pub(crate) fn poll_timers(&mut self, tx: &mut Tx) -> bool {
         let mut changed = false;
+        if self.history_ready && self.bridge.is_some() && self.account.is_some() {
+            if self.clock >= self.configuration_due
+                && !self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Pending::Configuration))
+            {
+                self.request("getClientState", json!({}), Pending::Configuration);
+                self.configuration_due = self.clock + 15.;
+            }
+            tx.wake_after(Duration::from_secs_f64(
+                (self.configuration_due - self.clock).max(0.001),
+            ));
+        }
         if let Some(at) = self.reconnect_at {
             if self.clock >= at {
                 self.connect();
@@ -724,6 +759,8 @@ mod tests {
         state.account_aliases = vec!["self".into()];
         state.bridge = Some(bridge);
         state.history_ready = true;
+        state.configuration_due = 1000.;
+        state.engine_configuration = Some(model::EngineConfiguration::default());
         state
             .conversations
             .push(Conversation::new("peer".into(), "Peer".into(), false));
@@ -979,5 +1016,36 @@ mod tests {
             .find(|r| r["method"] == "sendReceipt")
             .unwrap();
         assert_eq!(receipt["params"]["targetTimestamp"], json!([42]));
+    }
+    #[test]
+    fn unknown_or_disabled_phone_typing_setting_never_sends_start() {
+        let (mut s, requests) = connected();
+        s.window_focused = true;
+        s.engine_configuration = None;
+        s.composer.replace_text("private draft");
+        s.composer_changed(&mut Tx::default());
+        assert!(requests.try_recv().is_err());
+        s.engine_configuration = Some(model::EngineConfiguration {
+            typing_indicators: false,
+            ..model::EngineConfiguration::default()
+        });
+        s.composer_changed(&mut Tx::default());
+        assert!(requests.try_recv().is_err());
+        let incoming = json!({"method":"receive","params":{"envelope":{"sourceUuid":"peer","typingMessage":{"action":"STARTED"}}}});
+        s.receive(&incoming, &mut Tx::default());
+        assert!(s.conversations[0].typing.is_empty());
+    }
+    #[test]
+    fn phone_disabling_typing_clears_active_indicators_and_sends_stop() {
+        let (mut s, requests) = connected();
+        s.window_focused = true;
+        s.composer.replace_text("hello");
+        s.composer_changed(&mut Tx::default());
+        assert_eq!(requests.try_recv().unwrap()["params"]["stop"], false);
+        s.pending.insert(100, Pending::Configuration);
+        s.event(json!({"id":100,"result":{"version":1,"readReceipts":false,"typingIndicators":false,"linkPreviews":false,"unidentifiedDeliveryIndicators":false}}), &mut Tx::default());
+        assert_eq!(requests.try_recv().unwrap()["params"]["stop"], true);
+        assert!(s.typing_outgoing.is_none());
+        assert!(!s.engine_configuration.as_ref().unwrap().typing_indicators);
     }
 }

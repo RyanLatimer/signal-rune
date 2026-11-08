@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import urllib.request
+from extend_engine import extend
 
 VERSION = '0.14.10'
 SHA256 = '706a57d9faae7525cf732936efdabf210146e3c83f9e8ae7e4e62f5946121c33'
@@ -54,6 +55,7 @@ with tarfile.open(archive) as tar:
 runtime = (content / 'Resources' / 'runtime') if sys.platform == 'darwin' else (binary_dir / 'runtime')
 runtime.parent.mkdir(parents=True, exist_ok=True)
 shutil.copytree(temporary / f'signal-cli-{VERSION}', runtime)
+extend(runtime, root / 'engine-extension')
 java_home = Path(os.environ['JAVA_HOME'])
 shutil.copytree(java_home, runtime / 'jre', symlinks=True)
 # Bundle all upstream notices, including Java and Signal engine dependency licenses.
@@ -61,9 +63,13 @@ for filename in ['README.md', 'LICENSE', 'THIRD_PARTY.md']:
     shutil.copy2(root / filename, stage / filename)
 shutil.copytree(root / 'docs', stage / 'docs')
 shutil.copytree(root / 'licenses', stage / 'licenses')
+shutil.copytree(root / 'engine-extension', stage / 'engine-extension')
 env = dict(os.environ, JAVA_HOME=str(runtime / 'jre'))
 launcher = runtime / 'bin' / ('signal-cli.bat' if sys.platform == 'win32' else 'signal-cli')
 subprocess.run([str(launcher), '--version'], env=env, check=True, timeout=120)
+help_output = subprocess.run([str(launcher), 'getClientState', '--help'], env=env, check=True, capture_output=True, text=True, timeout=120).stdout
+if 'getClientState' not in help_output:
+    raise RuntimeError('Bundled engine extension smoke test failed')
 if sys.platform == 'darwin':
     subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--strict', str(app)], check=True)

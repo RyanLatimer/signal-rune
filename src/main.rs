@@ -16,6 +16,7 @@ enum Pending {
     Groups,
     Sync,
     Subscribe,
+    Configuration,
     Transient,
     Receipt(String, Vec<u64>),
     Send(String, u64),
@@ -58,6 +59,9 @@ pub struct State {
     reconnect_at: Option<f64>,
     draft_save_at: Option<f64>,
     draft_dirty: bool,
+    engine_configuration: Option<model::EngineConfiguration>,
+    configuration_due: f64,
+    configuration_error: Option<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -99,6 +103,9 @@ impl Default for State {
             reconnect_at: None,
             draft_save_at: None,
             draft_dirty: false,
+            engine_configuration: None,
+            configuration_due: 0.,
+            configuration_error: None,
         }
     }
 }
@@ -125,6 +132,8 @@ impl State {
         Some(id)
     }
     fn connect(&mut self) {
+        self.stop_typing();
+        self.engine_configuration = None;
         self.bridge = None;
         self.pending.clear();
         self.reconnect_at = None;
@@ -267,7 +276,15 @@ impl State {
             };
             if v.get("error").is_some() {
                 // Do not put server payloads (which can contain message text/keys) into logs or screenshots.
-                if !matches!(p, Pending::Transient | Pending::Receipt(..)) {
+                if matches!(p, Pending::Configuration) {
+                    self.engine_configuration = None;
+                    self.configuration_error = Some("Phone privacy settings could not be read. Use the bundled engine; typing is paused until its settings are available.".into());
+                    self.stop_typing();
+                }
+                if !matches!(
+                    p,
+                    Pending::Configuration | Pending::Transient | Pending::Receipt(..)
+                ) {
                     self.error = Some(format!(
                         "Signal request failed (code {}). Check your connection and try again.",
                         v["error"]["code"]
@@ -371,7 +388,31 @@ impl State {
                         self.merge_contacts(items, matches!(p, Pending::Groups));
                     }
                 }
-                Pending::Sync | Pending::Transient => {}
+                Pending::Sync => {}
+                Pending::Transient => {
+                    if r["privacySuppressed"] == true {
+                        self.configuration_due = self.clock;
+                    }
+                }
+                Pending::Configuration => {
+                    match serde_json::from_value::<model::EngineConfiguration>(r.clone()) {
+                        Ok(configuration) if configuration.version == 1 => {
+                            if !configuration.typing_indicators {
+                                self.stop_typing();
+                                for c in &mut self.conversations {
+                                    c.typing.clear();
+                                }
+                            }
+                            self.engine_configuration = Some(configuration);
+                            self.configuration_error = None;
+                        }
+                        _ => {
+                            self.engine_configuration = None;
+                            self.stop_typing();
+                            self.configuration_error = Some("The engine returned unsupported phone privacy settings. Typing is paused.".into());
+                        }
+                    }
+                }
                 Pending::Subscribe => {
                     self.status = "Connected".into();
                     self.reconnect_attempt = 0;

@@ -11,7 +11,7 @@ The user has confirmed that phone pairing and basic message exchange work. That 
 | Durable history | Authenticated-encrypted SQLite records, OS keychain keys, explicit Linux private-key-file fallback | Crash/recovery, large-history performance, backup/export/import audit |
 | Outbox/reconnect | Commit-before-send, original-timestamp retries, automatic backoff | Service integration during disconnect and process failure |
 | Phone sent/read sync | Implemented, replay/ordering/alias tests | Live cross-device group and direct tests |
-| Typing | Send/start/refresh/stop, foreground gating, receive timeout | Live phone/client verification |
+| Typing | Send/start/refresh/stop, foreground gating, receive timeout, engine-enforced phone privacy | Live phone/client verification |
 | Delivery/read receipts | Monotonic per-recipient state, foreground-only read and linked read sync | Live direct/group and privacy-setting verification |
 | Conversation pins/archive | Durable local controls and ordering | Cross-device metadata synchronization and context menu parity |
 | Disappearing/view-once messages | Currently excluded from the UI | Correct read/expiry/deletion and view-once media lifecycle |
@@ -26,3 +26,5 @@ The user has confirmed that phone pairing and basic message exchange work. That 
 | Distribution | Public repository and three native CI targets | Final-revision checks, launch on each OS, signed/notarized release and updater |
 
 No stable release or completion claim is appropriate while required parity work remains open. Implemented features are also checked for real protocol behavior; visual fixtures alone do not establish that a feature works.
+
+The bundled engine includes a small GPL extension with build-time tests for read-only phone privacy state, typing suppression, STOP behavior, and privacy-suppressed read-sync completion. Stock external engines fail closed for typing rather than guessing the phone setting.

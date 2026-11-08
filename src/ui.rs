@@ -674,7 +674,8 @@ fn settings(s: &State, t: &Theme, k: &Kit) -> El {
         .child(Button::new("Retry connection").disabled(s.demo).on_press(|s:&mut State|s.connect()).build(k).key("reconnect"))
         .child(label("History",16.,600.,t.fg))
         .child(label(format!("Encrypted on this device · {}", s.history_protection),12.,400.,t.muted).wrap())
-        .child(label("Typing indicators and read receipts follow the privacy settings on your phone. Read state syncs between your linked devices.",12.,400.,t.muted).max_w(570.).wrap())
+        .child(label(s.engine_configuration.as_ref().map(|c| format!("Phone privacy · Typing {} · Read receipts {}", if c.typing_indicators { "on" } else { "off" }, if c.read_receipts { "on" } else { "off" })).unwrap_or_else(|| "Phone privacy · Waiting for synchronized settings".into()),12.,400.,t.muted).wrap())
+        .child(label(s.configuration_error.as_deref().unwrap_or("Typing indicators and read receipts follow the privacy settings on your phone. Read state syncs between your linked devices."),12.,400.,t.muted).max_w(570.).wrap())
         .child(label("About Signal Rune",16.,600.,t.fg))
         .child(label("0.1.0 · Experimental native client\nRune + rune-kit · Signal transport by signal-cli\nNot affiliated with Signal Messenger LLC.",13.,400.,t.muted).wrap())
         .child(label("Messages, drafts, pins and read state are stored in authenticated encrypted history on this device. Account keys and contacts are managed by the Signal engine. Calls, attachments, stories and disappearing-message support are being implemented.",12.,400.,t.muted).max_w(570.).wrap()))
@@ -811,6 +812,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
 }
 fn demo(s: &mut State) {
     s.demo = true;
+    s.engine_configuration = Some(crate::model::EngineConfiguration::default());
+    s.history_protection = "Design fixture · no real account".into();
     s.account = Some("Preview account".into());
     s.status = "Design preview".into();
     let names = [

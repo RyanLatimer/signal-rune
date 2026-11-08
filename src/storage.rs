@@ -418,6 +418,9 @@ impl Store {
 impl Drop for Store {
     fn drop(&mut self) {
         let _ = self.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+        // Explicitly release the account lock instead of relying on the final descriptor
+        // close. Shared or inherited Unix descriptors must not keep a closed store locked.
+        let _ = FileExt::unlock(&self._lock);
     }
 }
 
@@ -523,5 +526,34 @@ mod tests {
             .unwrap();
         assert!(store.load().unwrap().conversations[0].messages.is_empty());
         assert!(Store::lock(dir.path()).is_err());
+    }
+    #[test]
+    fn worker_shutdown_releases_the_account_lock_before_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        for _ in 0..12 {
+            let worker = Worker::test(dir.path(), "self");
+            match worker
+                .events
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap()
+            {
+                Event::Ready(..) => {}
+                Event::Error(e) => panic!("History failed to reopen: {e}"),
+                _ => panic!("Expected loaded history"),
+            }
+            drop(worker);
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn retained_descriptor_does_not_keep_a_closed_store_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(dir.path(), "self", &[3; 32]);
+        let duplicate = store._lock.try_clone().unwrap();
+        drop(store);
+        let reopened = Store::lock(dir.path())
+            .expect("Store teardown must release the lock even when a descriptor copy is retained");
+        drop(reopened);
+        drop(duplicate);
     }
 }

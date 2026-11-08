@@ -144,6 +144,26 @@ impl Default for Preferences {
         }
     }
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineConfiguration {
+    pub version: u32,
+    pub read_receipts: bool,
+    pub typing_indicators: bool,
+    pub link_previews: bool,
+    pub unidentified_delivery_indicators: bool,
+}
+impl Default for EngineConfiguration {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            read_receipts: true,
+            typing_indicators: true,
+            link_previews: true,
+            unidentified_delivery_indicators: false,
+        }
+    }
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncLedger {

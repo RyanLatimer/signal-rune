@@ -238,5 +238,101 @@
       900
     ],
     "failures": []
+  },
+  {
+    "scene": "typing",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "typing",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "typing",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "receipts",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "receipts",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "receipts",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "pinned",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "pinned",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "pinned",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "archived",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "archived",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "archived",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
   }
 ]
