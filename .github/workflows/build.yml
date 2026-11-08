@@ -9,7 +9,8 @@ permissions:
   contents: read
 concurrency:
   group: desktop-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve completed native compilation and its cache when a follow-up commit arrives.
+  cancel-in-progress: false
 jobs:
   build:
     strategy:
