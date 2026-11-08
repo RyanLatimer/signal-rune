@@ -60,6 +60,7 @@ shutil.copytree(java_home, runtime / 'jre', symlinks=True)
 for filename in ['README.md', 'LICENSE', 'THIRD_PARTY.md']:
     shutil.copy2(root / filename, stage / filename)
 shutil.copytree(root / 'docs', stage / 'docs')
+shutil.copytree(root / 'licenses', stage / 'licenses')
 env = dict(os.environ, JAVA_HOME=str(runtime / 'jre'))
 launcher = runtime / 'bin' / ('signal-cli.bat' if sys.platform == 'win32' else 'signal-cli')
 subprocess.run([str(launcher), '--version'], env=env, check=True, timeout=120)
