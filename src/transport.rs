@@ -30,17 +30,23 @@ impl Bridge {
         let exe = std::env::var_os("SIGNAL_RUNE_CLI")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                let sibling = std::env::current_exe()
-                    .unwrap_or_default()
+                let app_exe = std::env::current_exe().unwrap_or_default();
+                let base = app_exe.parent().unwrap_or(std::path::Path::new("."));
+                let launcher = if cfg!(windows) {
+                    "bin/signal-cli.bat"
+                } else {
+                    "bin/signal-cli"
+                };
+                let sibling = base.join("runtime").join(launcher);
+                let resources = base
                     .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .join(if cfg!(windows) {
-                        "runtime/bin/signal-cli.bat"
-                    } else {
-                        "runtime/bin/signal-cli"
-                    });
+                    .unwrap_or(base)
+                    .join("Resources/runtime")
+                    .join(launcher);
                 if sibling.exists() {
                     sibling
+                } else if cfg!(target_os = "macos") && resources.exists() {
+                    resources
                 } else {
                     PathBuf::from("signal-cli")
                 }

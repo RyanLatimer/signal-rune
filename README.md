@@ -16,7 +16,7 @@ Open [GitHub Actions → Desktop builds](https://github.com/RyanLatimer/signal-r
 - **Windows x64**: portable `.zip`; extract the entire folder and launch `signal-rune.exe`.
 - **Linux x64**: `.tar.gz`; extract the entire folder and run `./signal-rune`. Requires libxkbcommon, Wayland client libraries and a Vulkan-capable driver (Mesa software rendering works).
 
-Archives bundle signal-cli 0.14.10 and a Java 25 runtime. Keep the `runtime` directory beside the executable. Builds are unsigned (macOS ad-hoc signed), not notarized. Intel macOS and Windows ARM are intentionally excluded. There is no automatic updater yet.
+Archives bundle signal-cli 0.14.10 and a Java 25 runtime. Keep the extracted bundle intact; macOS stores its runtime inside the `.app`, and Windows/Linux keep it beside the executable. Builds are unsigned (macOS ad-hoc signed), not notarized. Intel macOS and Windows ARM are intentionally excluded. There is no automatic updater yet.
 
 ## Link your phone
 

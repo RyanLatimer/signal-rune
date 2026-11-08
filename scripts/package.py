@@ -51,7 +51,8 @@ if temporary.exists():
     shutil.rmtree(temporary)
 with tarfile.open(archive) as tar:
     tar.extractall(temporary, filter='data')
-runtime = binary_dir / 'runtime'
+runtime = (content / 'Resources' / 'runtime') if sys.platform == 'darwin' else (binary_dir / 'runtime')
+runtime.parent.mkdir(parents=True, exist_ok=True)
 shutil.copytree(temporary / f'signal-cli-{VERSION}', runtime)
 java_home = Path(os.environ['JAVA_HOME'])
 shutil.copytree(java_home, runtime / 'jre', symlinks=True)
@@ -63,7 +64,8 @@ env = dict(os.environ, JAVA_HOME=str(runtime / 'jre'))
 launcher = runtime / 'bin' / ('signal-cli.bat' if sys.platform == 'win32' else 'signal-cli')
 subprocess.run([str(launcher), '--version'], env=env, check=True, timeout=120)
 if sys.platform == 'darwin':
-    subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
+    subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
+    subprocess.run(['codesign', '--verify', '--strict', str(app)], check=True)
     subprocess.run(['hdiutil', 'create', '-volname', 'Signal Rune', '-srcfolder', str(stage), '-ov', '-format', 'UDZO', str(dist / f'{name}.dmg')], check=True)
 elif sys.platform == 'win32':
     shutil.make_archive(str(dist / name), 'zip', dist, name)
