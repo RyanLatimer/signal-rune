@@ -12,7 +12,7 @@ args = parser.parse_args()
 out = Path('target/design')
 out.mkdir(parents=True, exist_ok=True)
 results = []
-scenes = ['chat-dark', 'chat-light', 'link-dark', 'link-light', 'settings', 'new-message', 'empty', 'error', 'long-message', 'qr-preview', 'typing', 'receipts', 'pinned', 'archived']
+scenes = ['chat-dark', 'chat-light', 'link-dark', 'link-light', 'settings', 'new-message', 'empty', 'error', 'long-message', 'qr-preview', 'typing', 'receipts', 'pinned', 'archived', 'reply', 'quoted', 'reactions', 'editing', 'message-menu', 'message-details', 'reaction-picker', 'delete-confirm', 'attachments', 'attachment-draft', 'multiline', 'disappearing']
 for scene in scenes:
     for width, height in [(1120, 760), (760, 560), (1440, 900)]:
         name = f'{scene}-{width}x{height}'
@@ -26,6 +26,18 @@ for scene in scenes:
         critical = ['settings']
         if scene.startswith('chat') or scene in ['long-message', 'typing', 'receipts', 'pinned']:
             critical += ['search', 'new-message', 'composer', 'send', 'conversation', 'pin-conversation', 'archive-conversation']
+        if scene in ['attachments','attachment-draft','multiline','disappearing']:
+            critical += ['composer','send','attach-file']
+        if scene == 'attachment-draft':
+            critical += ['draft-attachments','remove-attachment-0']
+        if scene in ['reply','editing']:
+            critical += ['compose-context','cancel-compose-context']
+        if scene == 'reaction-picker':
+            critical = ['reaction-dialog']
+        if scene == 'message-details':
+            critical = ['message-details-dialog']
+        if scene == 'delete-confirm':
+            critical = ['delete-message-dialog','confirm-message-delete']
         if scene == 'typing':
             critical += ['typing-indicator']
         if scene == 'new-message':
@@ -47,6 +59,12 @@ for scene in scenes:
                     x, y, w, h = e['rect']
                     if x < 377 or x+w > width+1:
                         failures.append(f'Message overflows conversation: {e["rect"]}')
+        if scene == 'reaction-picker':
+            image = cv2.imread(str(out / f'{name}.png'))
+            x,y,w,h = map(int,elements['reaction-dialog']['rect'])
+            hsv = cv2.cvtColor(image[y:y+h,x:x+w], cv2.COLOR_BGR2HSV)
+            if cv2.countNonZero(cv2.inRange(hsv,(0,100,130),(180,255,255))) < 40:
+                failures.append('Reaction picker has no color emoji glyphs')
         if scene == 'qr-preview':
             decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(cv2.imread(str(out / f'{name}.png')))
             expected = 'https://example.invalid/signal-rune-design-fixture?payload=' + 'sample-' * 16

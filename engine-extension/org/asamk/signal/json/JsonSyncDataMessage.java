@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Based on signal-cli v0.14.10; expose the existing protocol expiry start time.
+package org.asamk.signal.json;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
+
+import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.MessageEnvelope;
+import org.asamk.signal.manager.api.RecipientAddress;
+
+import java.util.UUID;
+
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "SyncDataMessage")
+record JsonSyncDataMessage(
+        @Deprecated String destination,
+        String destinationNumber,
+        String destinationUuid,
+        long expirationStartTimestamp,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonEditMessage editMessage,
+        @JsonUnwrapped JsonDataMessage dataMessage
+) {
+
+    static JsonSyncDataMessage from(MessageEnvelope.Sync.Sent transcriptMessage, Manager m) {
+        return new JsonSyncDataMessage(transcriptMessage.destination()
+                .map(RecipientAddress::getLegacyIdentifier)
+                .orElse(null),
+                transcriptMessage.destination().flatMap(RecipientAddress::number).orElse(null),
+                transcriptMessage.destination().flatMap(address -> address.uuid().map(UUID::toString)).orElse(null),
+                transcriptMessage.expirationStartTimestamp(),
+                transcriptMessage.editMessage().map(data -> JsonEditMessage.from(data, m)).orElse(null),
+                transcriptMessage.message().map(data -> JsonDataMessage.from(data, m)).orElse(null));
+    }
+}

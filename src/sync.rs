@@ -18,16 +18,10 @@ impl State {
         if self.demo || !self.history_ready || !self.dirty {
             return;
         }
+        self.remember_draft();
         let Some(store) = &self.store else {
             return;
         };
-        if let Some(c) = self
-            .selected
-            .as_ref()
-            .and_then(|id| self.conversations.iter_mut().find(|c| &c.id == id))
-        {
-            c.draft = self.composer.text.clone();
-        }
         self.preferences.dark = self.dark;
         self.generation += 1;
         let snapshot = storage::Snapshot {
@@ -69,6 +63,22 @@ impl State {
                             current.draft = self.composer.text.clone();
                         }
                         if let Some(old) = restored.iter_mut().find(|c| c.id == current.id) {
+                            // A discovered contact is a placeholder, not newer conversation
+                            // state. Keep restored drafts, media and pins when it is empty.
+                            if !current.active
+                                && current.messages.is_empty()
+                                && current.draft.is_empty()
+                                && current.draft_quote.is_none()
+                                && current.draft_edit.is_none()
+                                && current.draft_attachments.is_empty()
+                                && current.pinned == 0
+                                && !current.archived
+                            {
+                                old.aliases.extend(current.aliases);
+                                old.aliases.sort();
+                                old.aliases.dedup();
+                                continue;
+                            }
                             for m in std::mem::take(&mut old.messages) {
                                 if !current
                                     .messages
@@ -105,6 +115,34 @@ impl State {
                             .and_modify(|t| *t = (*t).max(timestamp))
                             .or_insert(timestamp);
                     }
+                    for action in snapshot.sync.actions {
+                        if !self.sync_ledger.actions.iter().any(|a| a.id == action.id) {
+                            self.sync_ledger.actions.push(action);
+                        }
+                    }
+                    self.sync_ledger.mutations.extend(snapshot.sync.mutations);
+                    for (sender, messages) in snapshot.sync.read_at {
+                        for (timestamp, at) in messages {
+                            self.sync_ledger
+                                .read_at
+                                .entry(sender.clone())
+                                .or_default()
+                                .entry(timestamp)
+                                .and_modify(|old| *old = (*old).min(at))
+                                .or_insert(at);
+                        }
+                    }
+                    self.apply_mutations();
+                    self.apply_sync_ledger();
+                    self.expire_messages(model::now_ms());
+                    self.preferences.next_message_id = self.preferences.next_message_id.max(
+                        self.conversations
+                            .iter()
+                            .flat_map(|c| &c.messages)
+                            .map(|m| m.id)
+                            .max()
+                            .unwrap_or(0),
+                    );
                     self.history_protection = protection;
                     if let Some(c) = self
                         .selected
@@ -112,6 +150,16 @@ impl State {
                         .and_then(|id| self.conversations.iter().find(|c| &c.id == id))
                     {
                         self.composer.replace_text(c.draft.clone());
+                        self.reply_to = c.draft_quote.clone();
+                        self.editing = c.draft_edit;
+                        self.edit_backup = c.draft_backup.clone();
+                    }
+                    if let Some(account) = self.account.clone()
+                        && !self.conversations.iter().any(|c| c.matches(&account))
+                    {
+                        let mut notes = Conversation::new(account, "Note to Self".into(), false);
+                        notes.aliases.extend(self.account_aliases.clone());
+                        self.conversations.push(notes);
                     }
                     self.history_ready = true;
                     self.dirty = true;
@@ -127,8 +175,13 @@ impl State {
                     // outbox sends or read receipts to the network.
                     if generation == self.generation {
                         self.flush_outbox();
+                        self.flush_actions();
                         self.flush_read_receipts(tx);
                     }
+                }
+                Some(storage::Event::Media(ticket, result)) => {
+                    self.media_result(ticket, result);
+                    changed = true;
                 }
                 Some(storage::Event::Error(error)) => {
                     self.history_ready = false;
@@ -163,6 +216,8 @@ impl State {
                     .iter()
                     .filter(|m| {
                         m.outgoing
+                            && !m.hidden
+                            && !m.deleted
                             && m.delivery == Delivery::Pending
                             && m.timestamp < model::now_ms()
                     })
@@ -177,9 +232,7 @@ impl State {
             {
                 continue;
             }
-            let mut params = json!({"message":m.body,"timestamp":m.timestamp});
-            params[if group { "groupId" } else { "recipient" }] = json!(peer);
-            self.request("send", params, Pending::Send(peer, m.id));
+            self.send_with_media(peer, group, m);
         }
     }
     pub(crate) fn mark_selected_read(&mut self) {
@@ -196,6 +249,7 @@ impl State {
         for m in &mut c.messages {
             if !m.outgoing && !m.read {
                 m.read = true;
+                m.start_expiration(model::now_ms());
                 self.dirty = true;
             }
         }
@@ -224,12 +278,12 @@ impl State {
                     batches
                         .entry((c.id.clone(), m.sender.clone()))
                         .or_default()
-                        .push((m.id, m.timestamp));
+                        .push((m.id, m.latest_timestamp()));
                 }
             }
         }
         for ((conversation, sender), messages) in batches {
-            let pending: Vec<u64> = self
+            let pending: Vec<(u64, u64)> = self
                 .pending
                 .values()
                 .filter_map(|p| {
@@ -244,10 +298,10 @@ impl State {
                 .collect();
             let messages: Vec<_> = messages
                 .into_iter()
-                .filter(|(id, _)| !pending.contains(id))
+                .filter(|entry| !pending.contains(entry))
                 .collect();
             for chunk in messages.chunks(100) {
-                self.request("sendReceipt", json!({"recipient":sender,"targetTimestamp":chunk.iter().map(|(_, ts)| ts).collect::<Vec<_>>(),"type":"read"}), Pending::Receipt(conversation.clone(), chunk.iter().map(|(id, _)| *id).collect()));
+                self.request("sendReceipt", json!({"recipient":sender,"targetTimestamp":chunk.iter().map(|(_, ts)| ts).collect::<Vec<_>>(),"type":"read"}), Pending::Receipt(conversation.clone(), chunk.to_vec()));
             }
         }
         if self.receipt_retry_at > self.clock {
@@ -294,6 +348,18 @@ impl State {
                     .or(read["sender"].as_str());
                 if let (Some(sender), Some(timestamp)) = (sender, read["timestamp"].as_u64()) {
                     let sender = self.resolve_id(sender);
+                    let read_at = e["timestamp"]
+                        .as_u64()
+                        .filter(|at| *at > 0)
+                        .unwrap_or_else(model::now_ms)
+                        .min(model::now_ms());
+                    self.sync_ledger
+                        .read_at
+                        .entry(sender.clone())
+                        .or_default()
+                        .entry(timestamp)
+                        .and_modify(|at| *at = (*at).min(read_at))
+                        .or_insert(read_at);
                     self.sync_ledger
                         .read_through
                         .entry(sender)
@@ -304,6 +370,8 @@ impl State {
             self.apply_sync_ledger();
             self.dirty = true;
         }
+        self.receive_mutation(v);
+        self.receive_expiration_update(v);
         let Some(m) = model::incoming(v) else {
             return;
         };
@@ -335,24 +403,48 @@ impl State {
                 && (m.outgoing || x.sender == sender)
         }) {
             existing.delivery.advance(Delivery::Sent);
+            if m.outgoing {
+                existing.start_expiration(
+                    m.expiration_start
+                        .unwrap_or(m.timestamp)
+                        .min(model::now_ms()),
+                );
+            }
             self.dirty = true;
             return;
         }
+        self.preferences.next_message_id += 1;
         c.messages.push(Message {
-            id: m.timestamp,
+            id: self.preferences.next_message_id,
             body: m.body,
             sender,
             outgoing: m.outgoing,
             timestamp: m.timestamp,
             read: m.outgoing,
             delivery: Delivery::Sent,
+            quote: m.quote,
+            expires_in: m.expires_in,
+            attachments: m.attachments,
             ..Message::default()
         });
+        if m.outgoing {
+            c.messages.last_mut().unwrap().start_expiration(
+                m.expiration_start
+                    .unwrap_or(m.timestamp)
+                    .min(model::now_ms()),
+            );
+        }
         c.archived = false;
+        c.active = true;
+        if self.account.as_deref() == Some(&c.id) {
+            c.name = "Note to Self".into();
+        }
         c.sort_messages();
         c.recount_unread();
+        self.apply_mutations();
         self.apply_sync_ledger();
         self.mark_selected_read();
+        self.expire_messages(model::now_ms());
         self.dirty = true;
         if self.selected.as_ref() == Some(&peer) && self.messages_at_bottom {
             tx.scroll_to_bottom("messages");
@@ -379,7 +471,7 @@ impl State {
             self.dirty = true;
         }
     }
-    fn apply_sync_ledger(&mut self) {
+    pub(crate) fn apply_sync_ledger(&mut self) {
         for c in &mut self.conversations {
             for (sender, receipts) in &self.sync_ledger.receipts {
                 if c.matches(sender) || (c.group && c.members.contains(sender)) {
@@ -394,10 +486,19 @@ impl State {
                         .sync_ledger
                         .read_through
                         .get(&m.sender)
-                        .is_some_and(|ts| m.timestamp <= *ts)
+                        .is_some_and(|ts| m.latest_timestamp() <= *ts)
                 {
                     m.read = true;
                     m.read_receipt_sent = true;
+                    let at = self
+                        .sync_ledger
+                        .read_at
+                        .get(&m.sender)
+                        .and_then(|reads| {
+                            reads.range(m.latest_timestamp()..).map(|(_, at)| *at).min()
+                        })
+                        .unwrap_or_else(model::now_ms);
+                    m.start_expiration(at);
                 }
             }
             c.recount_unread();
@@ -515,7 +616,19 @@ impl State {
         tx.wake_after(Duration::from_secs(3));
     }
     pub(crate) fn poll_timers(&mut self, tx: &mut Tx) -> bool {
-        let mut changed = false;
+        let mut changed = self.expire_messages(model::now_ms());
+        if let Some(deadline) = self
+            .conversations
+            .iter()
+            .flat_map(|c| &c.messages)
+            .filter(|m| !m.hidden)
+            .filter_map(|m| m.expires_at)
+            .min()
+        {
+            tx.wake_after(Duration::from_millis(
+                deadline.saturating_sub(model::now_ms()).clamp(1, 60_000),
+            ));
+        }
         if self.history_ready && self.bridge.is_some() && self.account.is_some() {
             if self.clock >= self.configuration_due
                 && !self
@@ -567,6 +680,8 @@ impl State {
         }
         self.mark_selected_read();
         self.flush_outbox();
+        self.flush_actions();
+        self.poll_media();
         let wall = model::now_ms();
         if let Some(timestamp) = self
             .conversations
@@ -606,6 +721,7 @@ impl State {
     }
     pub(crate) fn archive_selected(&mut self) {
         self.stop_typing();
+        self.remember_draft();
         if let Some(c) = self
             .selected
             .as_ref()
@@ -679,12 +795,19 @@ impl State {
                 }
                 merged.aliases.extend(c.aliases);
                 merged.messages.extend(c.messages);
+                merged.active |= c.active;
                 merged.pinned = merged.pinned.max(c.pinned);
                 merged.archived |= c.archived;
                 merged.muted_until = merged.muted_until.max(c.muted_until);
-                if !c.draft.is_empty() {
+                if !c.draft.is_empty() || c.draft_quote.is_some() || c.draft_edit.is_some() {
                     merged.draft = c.draft;
+                    merged.draft_quote = c.draft_quote;
+                    merged.draft_edit = c.draft_edit;
+                    merged.draft_backup = c.draft_backup;
                 }
+                merged.draft_attachments.extend(c.draft_attachments);
+                merged.expiration_updated_at =
+                    merged.expiration_updated_at.max(c.expiration_updated_at);
                 merged.typing.extend(c.typing);
             }
             merged.aliases.extend(aliases);
@@ -712,7 +835,64 @@ impl State {
                 a.timestamp == b.timestamp && a.outgoing == b.outgoing && a.sender == b.sender
             });
             merged.recount_unread();
+            if self.account.as_deref() == Some(&merged.id) {
+                merged.name = "Note to Self".into();
+            }
             self.conversations.push(merged);
+        }
+        let aliases: HashMap<String, String> = self
+            .conversations
+            .iter()
+            .flat_map(|c| c.aliases.iter().map(|a| (a.clone(), c.id.clone())))
+            .collect();
+        for c in &mut self.conversations {
+            for member in &mut c.members {
+                if let Some(id) = aliases.get(member) {
+                    *member = id.clone();
+                }
+            }
+            for m in &mut c.messages {
+                if let Some(id) = aliases.get(&m.sender) {
+                    m.sender = id.clone();
+                }
+                if let Some(quote) = &mut m.quote
+                    && let Some(id) = aliases.get(&quote.author)
+                {
+                    quote.author = id.clone();
+                }
+            }
+        }
+        for action in &mut self.sync_ledger.actions {
+            if let Some(id) = aliases.get(&action.conversation) {
+                action.conversation = id.clone();
+            }
+            if let Some(id) = aliases.get(&action.author) {
+                action.author = id.clone();
+            }
+        }
+        for mutation in &mut self.sync_ledger.mutations {
+            if let Some(id) = aliases.get(&mutation.conversation) {
+                mutation.conversation = id.clone();
+            }
+            if let Some(id) = aliases.get(&mutation.author) {
+                mutation.author = id.clone();
+            }
+            if let Some(id) = aliases.get(&mutation.actor) {
+                mutation.actor = id.clone();
+            }
+        }
+        for task in self.media_tasks.values_mut() {
+            let peer = match task {
+                crate::media::Task::Draft(peer)
+                | crate::media::Task::Download(peer, _, _)
+                | crate::media::Task::Send(peer, _) => Some(peer),
+                _ => None,
+            };
+            if let Some(peer) = peer
+                && let Some(id) = aliases.get(peer)
+            {
+                *peer = id.clone();
+            }
         }
         let mut receipts =
             std::collections::BTreeMap::<String, std::collections::BTreeMap<u64, Delivery>>::new();
@@ -736,6 +916,21 @@ impl State {
                 .or_insert(timestamp);
         }
         self.sync_ledger.read_through = reads;
+        let mut read_at =
+            std::collections::BTreeMap::<String, std::collections::BTreeMap<u64, u64>>::new();
+        for (sender, messages) in std::mem::take(&mut self.sync_ledger.read_at) {
+            let sender = self.resolve_id(&sender);
+            for (ts, at) in messages {
+                read_at
+                    .entry(sender.clone())
+                    .or_default()
+                    .entry(ts)
+                    .and_modify(|old| *old = (*old).min(at))
+                    .or_insert(at);
+            }
+        }
+        self.sync_ledger.read_at = read_at;
+        self.apply_mutations();
         self.apply_sync_ledger();
         self.mark_selected_read();
         self.dirty = true;
@@ -985,7 +1180,16 @@ mod tests {
         let retry = requests.try_iter().find(|r| r["method"] == "send").unwrap();
         assert_eq!(retry["params"]["timestamp"], timestamp);
         assert_eq!(retry["params"]["message"], "survive restart");
-        assert_eq!(restored.conversations[0].messages.len(), 1);
+        assert_eq!(
+            restored
+                .conversations
+                .iter()
+                .find(|c| c.id == "peer")
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
     }
     #[test]
     fn read_receipts_wait_for_read_state_to_commit() {

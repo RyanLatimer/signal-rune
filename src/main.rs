@@ -1,3 +1,6 @@
+mod actions;
+mod expiration;
+mod media;
 mod model;
 mod storage;
 mod sync;
@@ -18,8 +21,9 @@ enum Pending {
     Subscribe,
     Configuration,
     Transient,
-    Receipt(String, Vec<u64>),
+    Receipt(String, Vec<(u64, u64)>),
     Send(String, u64),
+    Action(u64),
 }
 pub struct State {
     bridge: Option<transport::Bridge>,
@@ -62,6 +66,17 @@ pub struct State {
     engine_configuration: Option<model::EngineConfiguration>,
     configuration_due: f64,
     configuration_error: Option<String>,
+    reply_to: Option<model::Quote>,
+    editing: Option<u64>,
+    edit_backup: Option<model::DraftBackup>,
+    message_context: Option<actions::MessageContext>,
+    reaction_target: Option<(String, u64)>,
+    message_details: Option<(String, u64)>,
+    delete_confirmation: Option<(String, u64, bool)>,
+    media_tasks: HashMap<u64, media::Task>,
+    media_failures: HashMap<String, String>,
+    media_cache: Option<rune::ImageCache>,
+    media_images: HashMap<String, rune::Image>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -106,6 +121,17 @@ impl Default for State {
             engine_configuration: None,
             configuration_due: 0.,
             configuration_error: None,
+            reply_to: None,
+            editing: None,
+            edit_backup: None,
+            message_context: None,
+            reaction_target: None,
+            message_details: None,
+            delete_confirmation: None,
+            media_tasks: HashMap::new(),
+            media_failures: HashMap::new(),
+            media_cache: None,
+            media_images: HashMap::new(),
         }
     }
 }
@@ -194,6 +220,8 @@ impl State {
     }
     fn choose(&mut self, id: String) {
         self.stop_typing();
+        self.message_context = None;
+        self.remember_draft();
         if let Some(old) = self
             .selected
             .as_ref()
@@ -202,7 +230,11 @@ impl State {
             old.draft = self.composer.text.clone();
         }
         if let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) {
+            c.active = true;
             self.composer.replace_text(c.draft.clone());
+            self.reply_to = c.draft_quote.clone();
+            self.editing = c.draft_edit;
+            self.edit_backup = c.draft_backup.clone();
         }
         self.selected = Some(id);
         self.composer.focused = true;
@@ -212,7 +244,12 @@ impl State {
     }
     fn new_conversation(&mut self) {
         let raw = self.recipient.text.trim();
-        let Some(id) = model::recipient_id(raw) else {
+        let Some(id) = model::recipient_id(raw).or_else(|| {
+            self.conversations
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(raw))
+                .map(|c| c.id.clone())
+        }) else {
             self.error = Some("Enter a valid international phone number or account UUID.".into());
             return;
         };
@@ -226,8 +263,17 @@ impl State {
         self.recipient.clear();
     }
     fn send(&mut self, tx: &mut Tx) {
+        if self.editing.is_some() {
+            self.submit_edit();
+            return;
+        }
         let body = self.composer.text.trim().to_string();
-        if body.is_empty() || self.demo {
+        let has_attachments = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.conversations.iter().find(|c| &c.id == id))
+            .is_some_and(|c| !c.draft_attachments.is_empty());
+        if (body.is_empty() && !has_attachments) || self.demo {
             return;
         }
         let Some(id) = self.selected.clone() else {
@@ -251,23 +297,44 @@ impl State {
             self.error = Some("Unblock this conversation before sending.".into());
             return;
         }
+        self.preferences.next_message_id += 1;
         c.messages.push(Message {
-            id: timestamp,
+            id: self.preferences.next_message_id,
             timestamp,
             body,
             outgoing: true,
             sender: self.account.clone().unwrap_or_default(),
             read: true,
             delivery: Delivery::Pending,
+            quote: self.reply_to.take(),
+            expires_in: c.expiration,
+            attachments: std::mem::take(&mut c.draft_attachments),
             ..Message::default()
         });
         c.draft.clear();
+        c.draft_quote = None;
         c.archived = false;
         self.composer.clear();
         self.dirty = true;
         // The outbox is sent only after this generation commits to encrypted history.
         self.persist();
         tx.scroll_to_bottom("messages");
+    }
+    fn composer_key(&mut self, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+        if self.composer.preedit.is_some() {
+            return false;
+        }
+        match ev.key {
+            rune::Key::Enter if !ev.mods.shift => {
+                self.send(tx);
+                true
+            }
+            rune::Key::Up if self.composer.text.is_empty() => {
+                self.edit_last_message();
+                true
+            }
+            _ => false,
+        }
     }
     fn event(&mut self, v: Value, tx: &mut Tx) {
         if let Some(id) = v["id"].as_u64() {
@@ -293,6 +360,16 @@ impl State {
                 if matches!(p, Pending::Receipt(..)) {
                     self.receipt_retry_at = self.clock + 30.;
                     tx.wake_after(std::time::Duration::from_secs(30));
+                }
+                if let Pending::Action(action) = &p
+                    && let Some(a) = self
+                        .sync_ledger
+                        .actions
+                        .iter_mut()
+                        .find(|a| a.id == *action)
+                {
+                    a.failed = true;
+                    self.dirty = true;
                 }
                 if let Pending::Send(peer, mid) = p {
                     self.delivery(&peer, mid, Delivery::Failed, 0);
@@ -388,6 +465,7 @@ impl State {
                         self.merge_contacts(items, matches!(p, Pending::Groups));
                     }
                 }
+                Pending::Action(action) => self.action_finished(action, r),
                 Pending::Sync => {}
                 Pending::Transient => {
                     if r["privacySuppressed"] == true {
@@ -431,7 +509,7 @@ impl State {
                     }
                     if let Some(c) = self.conversations.iter_mut().find(|c| c.id == peer) {
                         for m in &mut c.messages {
-                            if ids.contains(&m.id) {
+                            if ids.contains(&(m.id, m.latest_timestamp())) {
                                 m.read_receipt_sent = true;
                             }
                         }
@@ -460,6 +538,9 @@ impl State {
             if timestamp != 0 {
                 m.timestamp = timestamp;
             }
+            if matches!(d, Delivery::Sent | Delivery::Delivered | Delivery::Read) {
+                m.start_expiration(model::now_ms());
+            }
             self.dirty = true;
         }
     }
@@ -473,6 +554,7 @@ impl Drop for State {
     }
 }
 fn setup(s: &mut State, wake: rune::Waker) {
+    s.media_cache = Some(rune::ImageCache::new(wake.clone()));
     s.wake = Some(wake);
     // Snapshot runs must never touch the user's account, start network traffic or consume messages.
     if rune::tooling::headless_run().is_none() {
@@ -516,8 +598,22 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
 fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     match ev.key {
         rune::Key::Escape => {
-            s.new_chat = false;
-            s.settings = false;
+            if s.message_context.take().is_some()
+                || s.reaction_target.take().is_some()
+                || s.message_details.take().is_some()
+                || s.delete_confirmation.take().is_some()
+            {
+                return true;
+            }
+            if s.editing.is_some() {
+                s.cancel_edit();
+            } else if s.reply_to.take().is_some() {
+                s.dirty = true;
+                s.persist();
+            } else {
+                s.new_chat = false;
+                s.settings = false;
+            }
         }
         rune::Key::Command('n') if s.account.is_some() => {
             s.new_chat = true;
@@ -539,6 +635,13 @@ fn main() {
         poll: Some(poll),
         min_size: Some((760.0, 560.0)),
         scenes: ui::SCENES,
+        fonts: &[
+            include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+            include_bytes!("../assets/fonts/Inter-Medium.ttf"),
+            include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+            include_bytes!("../assets/fonts/NotoColorEmoji.ttf"),
+        ],
+        families: ("Inter, Noto Color Emoji", "Inter, Noto Color Emoji"),
         ..AppSpec::new("Signal Rune", (1120.0, 760.0), State::default, ui::view)
     })
     .on_focus(|s, focused, _| {
@@ -577,6 +680,60 @@ mod tests {
         assert_eq!(s.conversations[1].unread, 0);
         s.choose("demo-0".into());
         assert_eq!(s.composer.text, "unfinished draft");
+    }
+    #[test]
+    fn composer_shift_enter_and_ime_do_not_send() {
+        let mut s = fixture();
+        s.composer.replace_text("draft");
+        let key = |shift| rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods {
+                shift,
+                ..Default::default()
+            },
+        };
+        assert!(!s.composer_key(&key(true), &mut Tx::default()));
+        s.composer.preedit = Some(("composing".into(), None));
+        assert!(!s.composer_key(&key(false), &mut Tx::default()));
+        assert_eq!(s.composer.text, "draft");
+    }
+    #[test]
+    fn native_composer_grows_and_keeps_multiline_draft() {
+        let mut s = fixture();
+        s.composer.focused = true;
+        s.composer.replace_text("first");
+        let mut rt = Runtime::new(s, ui::view, (760., 560.), Env::default());
+        for _ in 0..60 {
+            rt.frame(1. / 60.);
+        }
+        let first = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("composer"))
+            .unwrap()
+            .target[3];
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods {
+                shift: true,
+                ..Default::default()
+            },
+        });
+        rt.ime(rune::Ime::Commit("second".into()));
+        for _ in 0..60 {
+            rt.frame(1. / 60.);
+        }
+        assert_eq!(rt.state.composer.text, "first\nsecond");
+        let second = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("composer"))
+            .unwrap()
+            .target[3];
+        assert!(second > first);
+        rt.state.choose("demo-1".into());
+        rt.state.choose("demo-0".into());
+        assert_eq!(rt.state.composer.text, "first\nsecond");
     }
     #[test]
     fn failed_rpc_does_not_mark_message_sent() {
@@ -649,6 +806,28 @@ mod tests {
         rt.frame(1. / 60.);
         assert!(rt.state.settings);
         assert!(rt.find("theme-toggle").is_some());
+    }
+    #[test]
+    fn native_message_menu_starts_reply() {
+        let mut rt = Runtime::new(fixture(), ui::view, (1120., 760.), Env::default());
+        for _ in 0..60 {
+            rt.frame(1. / 60.);
+        }
+        let (x, y) = rt.find("message-more-6").unwrap();
+        rt.pointer_move(x, y);
+        rt.frame(1. / 60.);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for _ in 0..30 {
+            rt.frame(1. / 60.);
+        }
+        assert!(rt.state.message_context.is_some());
+        let (x, y) = rt.find("message-menu-6-item0").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1. / 60.);
+        assert!(rt.state.reply_to.is_some());
+        assert!(rt.find("compose-context").is_some());
     }
     #[test]
     fn preview_and_offline_send_preserve_draft() {

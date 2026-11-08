@@ -6,7 +6,7 @@ license = "AGPL-3.0-only"
 description = "An experimental native Rune desktop client for Signal"
 
 [dependencies]
-rune = { git = "https://github.com/anomalyco/rune", rev = "3e0cf8fe58d592cdda1ec5533461192edcfcdb47" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "3e0cf8fe58d592cdda1ec5533461192edcfcdb47", features = ["native-file-dialog"] }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "3e0cf8fe58d592cdda1ec5533461192edcfcdb47" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -15,6 +15,9 @@ directories = "6"
 
 aes-gcm = "0.10.3"
 sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+mime_guess = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 zeroize = "1"
 fs2 = "0.4"

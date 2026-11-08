@@ -1,11 +1,13 @@
 //! Account-scoped, authenticated-encrypted history. SQLite only ever sees ciphertext.
 //! A single worker owns the connection and commits before acknowledging a generation.
+pub mod media;
 use crate::model::{Conversation, Message, Preferences, SyncLedger};
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, AeadCore, OsRng, Payload},
 };
 use fs2::FileExt;
+use hmac::{Hmac, Mac};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -48,10 +50,12 @@ pub enum Event {
     Ready(Snapshot, String),
     Saved(u64),
     Error(String),
+    Media(u64, Result<media::ResultData, String>),
 }
 enum Command {
     Save(u64, Snapshot),
     Stop,
+    Media(u64, media::Operation),
 }
 pub struct Worker {
     commands: Sender<Command>,
@@ -120,6 +124,11 @@ impl Worker {
                         wake();
                     }
                     Command::Stop => break,
+                    Command::Media(ticket, operation) => {
+                        let result = store.media(operation);
+                        let _ = events.send(Event::Media(ticket, result));
+                        wake();
+                    }
                 }
             }
         });
@@ -132,6 +141,11 @@ impl Worker {
     pub fn save(&self, generation: u64, snapshot: Snapshot) -> Result<(), String> {
         self.commands
             .send(Command::Save(generation, snapshot))
+            .map_err(|_| "History worker stopped".into())
+    }
+    pub fn media(&self, ticket: u64, operation: media::Operation) -> Result<(), String> {
+        self.commands
+            .send(Command::Media(ticket, operation))
             .map_err(|_| "History worker stopped".into())
     }
 }
@@ -218,10 +232,12 @@ fn key_for(dir: &Path, account: &str) -> Result<(Zeroizing<Vec<u8>>, String), St
 struct Store {
     db: Connection,
     cipher: Aes256Gcm,
+    index_key: Zeroizing<Vec<u8>>,
     account: String,
     hashes: HashMap<String, String>,
     protection: String,
     _lock: File,
+    pending_media: HashSet<String>,
 }
 impl Store {
     fn open(root: &Path, account: &str) -> Result<Self, String> {
@@ -256,22 +272,39 @@ impl Store {
         let version: u32 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 1 {
+        if version > 2 {
             return Err("This history was created by a newer Signal Rune version; it has not been modified.".into());
         }
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); PRAGMA user_version=1;").map_err(|e| e.to_string())?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); PRAGMA user_version=2;").map_err(|e| e.to_string())?;
         let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid history key length")?;
+        let mut index =
+            <Hmac<Sha256> as Mac>::new_from_slice(key).map_err(|_| "Invalid history index key")?;
+        index.update(b"signal-rune-history-index-v1\0");
+        index.update(account.as_bytes());
+        let index_key = Zeroizing::new(index.finalize().into_bytes().to_vec());
         Ok(Self {
             db,
             cipher,
+            index_key,
             account: account.to_owned(),
             hashes: HashMap::new(),
             protection,
             _lock: lock,
+            pending_media: HashSet::new(),
         })
     }
     fn aad(&self, id: &str) -> Vec<u8> {
         format!("signal-rune-history-v1\0{}\0{id}", self.account).into_bytes()
+    }
+    fn record_id(&self, identity: &str) -> String {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.index_key)
+            .expect("HMAC accepts an arbitrary key length");
+        mac.update(identity.as_bytes());
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
     fn seal(&self, id: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -346,7 +379,7 @@ impl Store {
         let mut desired = HashSet::new();
         let mut updates = Vec::new();
         let mut add = |identity: String, record: Record| -> Result<(), String> {
-            let id = digest(identity);
+            let id = self.record_id(&identity);
             desired.insert(id.clone());
             let plaintext = Zeroizing::new(
                 serde_json::to_vec(&record).map_err(|_| "Cannot encode history record")?,
@@ -396,12 +429,18 @@ impl Store {
             .filter(|k| !desired.contains(*k))
             .cloned()
             .collect();
+        let media_refs = self.media_references(snapshot);
+        let media_remove = self.unreferenced_media(&media_refs)?;
         let tx = self.db.transaction().map_err(|e| e.to_string())?;
         for (id, value, _) in &updates {
             tx.execute("INSERT INTO records(id,value) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET value=excluded.value", params![id, value]).map_err(|e| e.to_string())?;
         }
         for id in &remove {
             tx.execute("DELETE FROM records WHERE id=?1", [id])
+                .map_err(|e| e.to_string())?;
+        }
+        for id in media_remove {
+            tx.execute("DELETE FROM media WHERE id=?1", [id])
                 .map_err(|e| e.to_string())?;
         }
         tx.commit()
@@ -412,6 +451,7 @@ impl Store {
         for id in remove {
             self.hashes.remove(&id);
         }
+        self.pending_media.retain(|id| !media_refs.contains(id));
         Ok(())
     }
 }
@@ -481,6 +521,82 @@ mod tests {
         }
         assert!(open(dir.path(), "account-a", &[2; 32]).load().is_err());
         assert!(open(dir.path(), "account-b", &[1; 32]).load().is_err());
+    }
+    #[test]
+    fn record_indexes_are_keyed_and_legacy_rows_migrate_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(dir.path(), "a", &[3; 32]);
+        let identity = "conversation\0+12025550123";
+        assert_ne!(store.record_id(identity), digest(identity));
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(
+            store.record_id(identity),
+            open(other.path(), "a", &[4; 32]).record_id(identity)
+        );
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(
+            store.record_id(identity),
+            open(other.path(), "b", &[3; 32]).record_id(identity)
+        );
+        let legacy_id = digest(identity);
+        let record = Record::Conversation {
+            value: Box::new(Conversation::new(
+                "+12025550123".into(),
+                "Peer".into(),
+                false,
+            )),
+        };
+        let sealed = store
+            .seal(&legacy_id, &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        store
+            .db
+            .execute(
+                "INSERT INTO records VALUES(?1,?2)",
+                params![legacy_id, sealed],
+            )
+            .unwrap();
+        store.db.pragma_update(None, "user_version", 1).unwrap();
+        drop(store);
+        let mut store = open(dir.path(), "a", &[3; 32]);
+        let snapshot = store.load().unwrap();
+        assert_eq!(snapshot.conversations[0].name, "Peer");
+        store.save(&snapshot).unwrap();
+        assert_eq!(
+            store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM records WHERE id=?1",
+                    [&legacy_id],
+                    |r| r.get::<_, u32>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.load().unwrap().conversations[0].id, "+12025550123");
+    }
+    #[test]
+    fn newer_schema_is_not_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(dir.path(), "a", &[3; 32]);
+        store.db.pragma_update(None, "user_version", 3).unwrap();
+        drop(store);
+        assert!(
+            Store::initialize(
+                dir.path(),
+                "a",
+                &[3; 32],
+                "Test".into(),
+                Store::lock(dir.path()).unwrap()
+            )
+            .is_err()
+        );
+        let db = Connection::open(dir.path().join("history.db")).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            3
+        );
     }
     #[test]
     fn tampered_records_are_rejected_and_preserved() {

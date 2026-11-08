@@ -1,6 +1,6 @@
 use crate::{Conversation, Delivery, Message, State};
 use rune::{Color, Cx, El, Icon, ScrollSpec, TextStyle, col, el, icon, row, text};
-use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed, TextInput};
+use rune_kit::{Button, ButtonVariant, Dialog, Kit, PaletteSeed, TextArea, TextInput};
 
 static CHAT: Icon = Icon {
     name: "chat",
@@ -37,6 +37,11 @@ static BACK: Icon = Icon {
     view: 24.,
     body: r#"<path d="m14 5-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.7"/>"#,
 };
+static MORE: Icon = Icon {
+    name: "more",
+    view: 24.,
+    body: r#"<circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/>"#,
+};
 static PIN: Icon = Icon {
     name: "pin",
     view: 24.,
@@ -46,6 +51,11 @@ static ARCHIVE: Icon = Icon {
     name: "archive",
     view: 24.,
     body: r#"<path d="M4 8h16v12H4V8ZM3 3h18v5H3V3Zm6 9h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+};
+static ATTACH: Icon = Icon {
+    name: "attach",
+    view: 24.,
+    body: r#"<path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a2 2 0 0 1 3 3l-9 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
 };
 fn typing_label(c: &Conversation) -> Option<String> {
     if c.typing.is_empty() {
@@ -193,7 +203,9 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
         .conversations
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.archived == s.show_archived)
+        .filter(|(_, c)| {
+            c.archived == s.show_archived && (c.active || c.messages.iter().any(|m| !m.hidden))
+        })
         .collect();
     conversations.sort_by(|(_, a), (_, b)| {
         b.pinned
@@ -279,8 +291,7 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
                                         ),
                                 )
                                 .child(label(
-                                    c.messages
-                                        .last()
+                                    c.last_message()
                                         .map(|m| clock(m.timestamp))
                                         .unwrap_or_default(),
                                     10.,
@@ -392,74 +403,343 @@ fn clock(ms: u64) -> String {
         .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
         .unwrap_or_default()
 }
-fn message(m: &Message, t: &Theme, i: usize, max_width: f32) -> El {
+struct MessageLayout {
+    width: f32,
+    anchor: rune::PointerPress,
+}
+fn message(
+    s: &State,
+    c: &Conversation,
+    m: &Message,
+    t: &Theme,
+    k: &Kit,
+    layout: MessageLayout,
+    layer: &mut Vec<El>,
+) -> El {
+    let ink = if m.outgoing { Color::WHITE } else { t.fg };
+    let muted = if m.outgoing { Color::WHITE } else { t.muted };
     let status = if m.outgoing {
         match m.delivery {
             Delivery::Pending => "Sending…",
             Delivery::Sent => "Sent",
             Delivery::Delivered => "Delivered",
             Delivery::Read => "Read",
-            Delivery::Failed => "Failed · copy to retry",
+            Delivery::Failed => "Failed",
         }
     } else {
         ""
     };
-    row()
-        .w_full()
-        .child(if m.outgoing { el().grow(1.) } else { el() })
-        .child(
+    let mut bubble = col()
+        .key(format!("message-{}", m.id))
+        .max_w(layout.width)
+        .min_w(60.)
+        .padding(12.)
+        .gap(5.)
+        .radius(16.)
+        .fill(if m.outgoing { t.blue } else { t.incoming });
+    if c.group && !m.outgoing && !m.sender.is_empty() {
+        bubble = bubble.child(label(s.display_name(&m.sender), 11., 600., ink));
+    }
+    if let Some(quote) = &m.quote {
+        let target = c
+            .messages
+            .iter()
+            .find(|target| {
+                target.matches_timestamp(quote.timestamp)
+                    && (target.sender == quote.author
+                        || (target.outgoing && s.account.as_deref() == Some(&quote.author)))
+            })
+            .map(|m| m.id);
+        bubble = bubble.child(
             col()
-                .key(format!("message-{i}"))
-                .max_w(max_width)
-                .min_w(60.)
-                .padding(12.)
-                .gap(5.)
-                .radius(16.)
-                .fill(if m.outgoing { t.blue } else { t.incoming })
+                .key(format!("quote-{}", m.id))
+                .w_full()
+                .padding(8.)
+                .gap(4.)
+                .border_sides([0., 0., 0., 2.], ink)
+                .fill(ink.alpha(0.08))
+                .radius(4.)
+                .on_press_tx(move |_: &mut State, tx| {
+                    if let Some(target) = target {
+                        tx.scroll_into_view(format!("message-{target}"));
+                    }
+                })
+                .child(label(s.display_name(&quote.author), 11., 600., ink))
                 .child(
-                    label(
-                        &m.body,
-                        14.,
-                        400.,
-                        if m.outgoing { Color::WHITE } else { t.fg },
-                    )
-                    .wrap_anywhere()
-                    .selectable(true),
-                )
-                .child(
-                    label(
-                        format!(
-                            "{}  {}{}",
-                            clock(m.timestamp),
-                            status,
-                            if m.receipts.len() > 1 {
-                                format!(
-                                    " · {}",
-                                    m.receipts
-                                        .values()
-                                        .filter(|d| **d == Delivery::Read)
-                                        .count()
-                                )
-                            } else {
-                                String::new()
-                            }
-                        ),
-                        10.,
-                        400.,
-                        if m.delivery == Delivery::Failed {
-                            color("#ffe0c9")
-                        } else if m.outgoing {
-                            Color::WHITE
-                        } else {
-                            t.muted
-                        },
-                    )
-                    .self_end(),
+                    label(&quote.body, 12., 400., ink)
+                        .wrap_anywhere()
+                        .max_h(48.),
                 ),
+        );
+    }
+    for a in &m.attachments {
+        let attachment = a.clone();
+        let mut card = col()
+            .key(format!("attachment-{}-{}", m.id, a.id))
+            .gap(6.)
+            .padding(8.)
+            .radius(8.)
+            .fill(ink.alpha(0.07))
+            .role("button")
+            .label(format!("Save {}", a.name))
+            .focusable(true)
+            .on_press_tx(move |s: &mut State, tx| s.save_attachment(&attachment, tx));
+        if let Some(image) = a.media_id.as_ref().and_then(|id| s.media_images.get(id)) {
+            let width = (layout.width - 48.).clamp(120., 300.);
+            let height = image
+                .size()
+                .map_or(160., |[w, h]| width * h as f32 / w.max(1) as f32)
+                .clamp(64., 220.);
+            card = card.child(
+                el().w(width)
+                    .h(height)
+                    .radius(6.)
+                    .pixels_fit(image.pixels(), rune::SurfaceFit::Fit),
+            );
+        }
+        card = card
+            .child(label(&a.name, 13., 500., ink).wrap_anywhere())
+            .child(label(
+                format!(
+                    "{} · {}",
+                    crate::media::size(a.size),
+                    if a.media_id.is_some() {
+                        "Save"
+                    } else if s.media_failures.contains_key(&a.id) {
+                        "Retry download"
+                    } else {
+                        "Downloading…"
+                    }
+                ),
+                10.,
+                400.,
+                muted,
+            ));
+        bubble = bubble.child(card);
+    }
+    if !m.body.is_empty() || m.deleted {
+        bubble = bubble.child(
+            label(
+                if m.deleted {
+                    "This message was deleted"
+                } else {
+                    &m.body
+                },
+                14.,
+                400.,
+                ink,
+            )
+            .font(if m.deleted {
+                TextStyle::new(14., 400.).italic()
+            } else {
+                TextStyle::new(14., 400.)
+            })
+            .wrap_anywhere()
+            .selectable(true),
+        );
+    }
+    if !m.reactions.is_empty() {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for emoji in m.reactions.values() {
+            *counts.entry(emoji.clone()).or_default() += 1;
+        }
+        let mut reactions = row().gap(4.).flex_wrap();
+        for (emoji, count) in counts {
+            let peer = c.id.clone();
+            let mid = m.id;
+            let sent = emoji.clone();
+            let own = s.account.as_ref().and_then(|a| m.reactions.get(a)) == Some(&emoji);
+            reactions = reactions.child(
+                el().key(format!("reaction-{mid}-{emoji}"))
+                    .role("button")
+                    .label(format!("{emoji}, {count} reactions"))
+                    .focusable(true)
+                    .px(8.)
+                    .py(4.)
+                    .radius(10.)
+                    .fill(ink.alpha(if own { 0.22 } else { 0.1 }))
+                    .on_press(move |s: &mut State| {
+                        s.queue_action(
+                            &peer,
+                            mid,
+                            crate::model::ActionKind::Reaction {
+                                emoji: sent.clone(),
+                                remove: own,
+                            },
+                        );
+                    })
+                    .child(label(format!("{emoji} {count}"), 12., 500., ink)),
+            );
+        }
+        bubble = bubble.child(reactions);
+    }
+    let peer = c.id.clone();
+    let mid = m.id;
+    let mut meta = row().gap(6.).self_end().center_y();
+    if m.expires_in > 0 {
+        meta = meta.child(
+            label(
+                format!("◷ {}", crate::expiration::duration(m.expires_in)),
+                10.,
+                400.,
+                muted,
+            )
+            .label("Disappearing message"),
+        );
+    }
+    if m.edited {
+        meta = meta.child(
+            label("Edited", 10., 500., muted)
+                .key(format!("edited-{mid}"))
+                .role("button")
+                .label("View edit history")
+                .focusable(true)
+                .on_press(move |s: &mut State| s.message_details = Some((peer.clone(), mid))),
+        );
+    }
+    let read_count = m
+        .receipts
+        .values()
+        .filter(|d| **d == Delivery::Read)
+        .count();
+    meta = meta.child(label(
+        format!(
+            "{}  {}{}",
+            clock(m.timestamp),
+            status,
+            if c.group && read_count > 0 {
+                format!(" · {read_count}")
+            } else {
+                String::new()
+            }
+        ),
+        10.,
+        400.,
+        muted,
+    ));
+    bubble = bubble.child(meta);
+    let peer = c.id.clone();
+    let mid = m.id;
+    bubble = bubble.on_secondary_press(move |s: &mut State, point, _| {
+        s.message_context = Some(crate::actions::MessageContext {
+            conversation: peer.clone(),
+            message: mid,
+            point,
+        })
+    });
+    let point = s
+        .message_context
+        .as_ref()
+        .filter(|ctx| ctx.conversation == c.id && ctx.message == m.id)
+        .map(|ctx| ctx.point);
+    let mut menu = rune_kit::context_menu(format!("message-menu-{}", m.id), bubble, point)
+        .on_close(|s: &mut State| s.message_context = None);
+    let peer = c.id.clone();
+    let mid = m.id;
+    menu = menu.item(
+        rune_kit::MenuItem::new("Reply")
+            .disabled(m.deleted)
+            .on_select(move |s: &mut State| s.start_reply(&peer, mid)),
+    );
+    let peer = c.id.clone();
+    menu = menu.item(
+        rune_kit::MenuItem::new("React")
+            .disabled(m.deleted)
+            .on_select(move |s: &mut State| {
+                s.message_context = None;
+                s.reaction_target = Some((peer.clone(), mid));
+            }),
+    );
+    let copy = m.body.clone();
+    menu = menu.item(
+        rune_kit::MenuItem::new("Copy text")
+            .disabled(m.deleted)
+            .on_select_tx(move |s: &mut State, tx| {
+                tx.copy(copy.clone());
+                s.message_context = None;
+            }),
+    );
+    let note = s.account.as_ref().is_some_and(|a| c.matches(a));
+    if m.outgoing {
+        let peer = c.id.clone();
+        menu = menu.item(
+            rune_kit::MenuItem::new("Edit message")
+                .disabled(!m.can_edit(note))
+                .on_select(move |s: &mut State| s.start_edit(&peer, mid)),
+        );
+        if m.delivery == Delivery::Failed
+            || s.sync_ledger
+                .actions
+                .iter()
+                .any(|a| a.conversation == c.id && a.message == mid && a.failed)
+        {
+            let peer = c.id.clone();
+            menu = menu.item(
+                rune_kit::MenuItem::new("Retry")
+                    .on_select(move |s: &mut State| s.retry_message(&peer, mid)),
+            );
+        }
+    }
+    let peer = c.id.clone();
+    menu = menu
+        .item(
+            rune_kit::MenuItem::new("Message details").on_select(move |s: &mut State| {
+                s.message_context = None;
+                s.message_details = Some((peer.clone(), mid));
+            }),
         )
-        .child(if !m.outgoing { el().grow(1.) } else { el() })
+        .separator();
+    let peer = c.id.clone();
+    menu = menu.item(
+        rune_kit::MenuItem::new("Delete for me")
+            .danger(true)
+            .on_select(move |s: &mut State| {
+                s.message_context = None;
+                s.delete_confirmation = Some((peer.clone(), mid, false));
+            }),
+    );
+    if m.can_delete_for_everyone() {
+        let peer = c.id.clone();
+        menu = menu.item(
+            rune_kit::MenuItem::new("Delete for everyone")
+                .danger(true)
+                .on_select(move |s: &mut State| {
+                    s.message_context = None;
+                    s.delete_confirmation = Some((peer.clone(), mid, true));
+                }),
+        );
+    }
+    let bubble = menu.build(k, layer);
+    let peer = c.id.clone();
+    let anchor = layout.anchor;
+    let more = el()
+        .key(format!("message-more-{mid}"))
+        .size(28., 28.)
+        .radius(14.)
+        .role("button")
+        .label("Message options")
+        .help("Message options")
+        .focusable(true)
+        .group_opacity(0., 1.)
+        .hover(t.hover)
+        .center()
+        .self_center()
+        .on_press(move |s: &mut State| {
+            s.message_context = Some(crate::actions::MessageContext {
+                conversation: peer.clone(),
+                message: mid,
+                point: anchor,
+            })
+        })
+        .child(icon(&MORE, 18.).color(t.muted));
+    let line = row().w_full().gap(6.).hover_group_focus();
+    if m.outgoing {
+        line.child(el().grow(1.)).child(more).child(bubble)
+    } else {
+        line.child(bubble).child(more).child(el().grow(1.))
+    }
 }
-fn conversation(s: &State, t: &Theme, k: &Kit, max_width: f32) -> El {
+fn conversation(s: &State, t: &Theme, k: &Kit, cx: &mut Cx<State>, layer: &mut Vec<El>) -> El {
     let c = s
         .selected
         .as_ref()
@@ -510,8 +790,34 @@ fn conversation(s: &State, t: &Theme, k: &Kit, max_width: f32) -> El {
             .py(24.),
         );
     }
-    for (i, m) in c.messages.iter().enumerate() {
-        messages = messages.child(message(m, t, i, max_width));
+    let max_width = cx
+        .layout_size("conversation")
+        .map(|r| (r[0] - 96.).clamp(160., 440.))
+        .unwrap_or(280.);
+    for m in c.messages.iter().filter(|m| !m.hidden) {
+        let rect = cx
+            .window_layout(&format!("message-{}", m.id))
+            .unwrap_or([400., 100., max_width, 40.]);
+        let anchor = rune::PointerPress {
+            x: if m.outgoing {
+                rect[0] - 30.
+            } else {
+                rect[0] + rect[2] + 4.
+            },
+            y: rect[1],
+        };
+        messages = messages.child(message(
+            s,
+            c,
+            m,
+            t,
+            k,
+            MessageLayout {
+                width: max_width,
+                anchor,
+            },
+            layer,
+        ));
     }
     if let Some(typing) = typing_label(c) {
         messages = messages.child(
@@ -530,18 +836,65 @@ fn conversation(s: &State, t: &Theme, k: &Kit, max_width: f32) -> El {
         );
     }
     let pin_id = c.id.clone();
-    col().key("conversation").grow(1.).min_w(0.).h_full()
+    let drop_peer = c.id.clone();
+    col().key("conversation").grow(1.).min_w(0.).h_full().on_drop_files(move |s:&mut State,paths,_| s.import_files(&drop_peer,paths))
         .child(row().h(72.).w_full().px(24.).gap(12.).center_y().border_sides([0.,0.,1.,0.],t.line)
             .child(avatar(&c.name,38.,s.conversations.iter().position(|x|x.id==c.id).unwrap_or(0)))
-            .child(col().gap(4.).grow(1.).min_w(0.).child(label(&c.name,15.,600.,t.fg).truncate()).child(label(if c.blocked {"Blocked"} else if c.group{"Group conversation"}else{"Signal conversation"},11.,400.,t.muted)))
+            .child(col().gap(4.).grow(1.).min_w(0.).child(label(&c.name,15.,600.,t.fg).truncate()).child(label(if c.blocked {"Blocked"} else if c.expiration > 0 {"Disappearing messages enabled"} else if c.group{"Group conversation"}else{"Signal conversation"},11.,400.,t.muted)))
             .child(icon_button("pin-conversation", if c.pinned > 0 { "Unpin conversation" } else { "Pin conversation" }, &PIN, t, move |s| s.toggle_pin(&pin_id)))
             .child(icon_button("archive-conversation", if c.archived { "Unarchive conversation" } else { "Archive conversation" }, &ARCHIVE, t, |s| s.archive_selected())))
         .child(col().key("messages").grow(1.).min_h(0.).w_full().scroll(ScrollSpec{stick_bottom:true}).on_at_bottom(|s: &mut State, at| { s.messages_at_bottom = at; if at { s.mark_selected_read(); s.persist(); } }).child(messages))
         .child(col().w_full().px(20.).py(16.).gap(8.)
+            .child(compose_context(s,t,k))
+            .child(draft_media(c,t,k))
             .child(row().w_full().gap(10.).center_y()
-                .child(TextInput::new(&s.composer).label("Message").placeholder(if s.demo {"Sample preview · sending is disabled"}else{"Message"}).height(44.).on_edit(|s:&mut State|&mut s.composer).on_change(|s: &mut State, tx| s.composer_changed(tx)).on_submit(|s:&mut State,tx|s.send(tx)).build(k).key("composer").grow(1.).min_w(0.))
-                .child(el().key("send").role("button").label("Send message").focusable(true).size(44.,44.).radius(22.).fill(t.blue).disabled(s.demo || s.composer.text.trim().is_empty() || s.bridge.is_none()).on_press_tx(|s:&mut State,tx|s.send(tx)).center().child(icon(&SEND,22.).color(Color::WHITE))))
-            .child(label(if s.demo{"Preview uses fictional messages. Connect your phone to send real messages."}else{"Enter to send · End-to-end encrypted"},10.,400.,t.muted).self_center()))
+                .child(el().key("attach-file").role("button").label("Attach a file").focusable(true).size(32.,44.).disabled(s.demo || !s.history_ready || s.editing.is_some()).on_press_tx(|s:&mut State,tx|s.choose_attachment(tx)).center().child(icon(&ATTACH,21.).color(t.muted)))
+                .child(TextArea::new(&s.composer).label("Message").placeholder(if s.demo {"Sample preview · sending is disabled"}else{"Message"}).auto_grow(1,6).on_edit(|s:&mut State|&mut s.composer).on_change(|s: &mut State, tx| s.composer_changed(tx)).on_key(|s: &mut State, ev, tx| s.composer_key(ev,tx)).build(k).min_h(44.).justify_center().key("composer").grow(1.).min_w(0.))
+                .child(el().key("send").role("button").label(if s.editing.is_some() {"Save changes"} else {"Send message"}).focusable(true).size(44.,44.).radius(22.).fill(t.blue).disabled(s.demo || (s.composer.text.trim().is_empty() && c.draft_attachments.is_empty()) || s.bridge.is_none()).on_press_tx(|s:&mut State,tx|s.send(tx)).center().child(icon(&SEND,22.).color(Color::WHITE))))
+            .child(label(if s.demo{"Preview uses fictional messages. Connect your phone to send real messages."}else{"Enter to send · Shift+Enter for a new line"},10.,400.,t.muted).self_center()))
+}
+fn draft_media(c: &Conversation, t: &Theme, k: &Kit) -> El {
+    if c.draft_attachments.is_empty() {
+        return el();
+    }
+    let mut files = col()
+        .key("draft-attachments")
+        .gap(4.)
+        .w_full()
+        .max_h(96.)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        });
+    for (index, a) in c.draft_attachments.iter().enumerate() {
+        files = files.child(
+            row()
+                .w_full()
+                .gap(8.)
+                .center_y()
+                .padding(6.)
+                .fill(t.hover)
+                .radius(6.)
+                .child(icon(&ATTACH, 18.).color(t.muted))
+                .child(
+                    label(
+                        format!("{} · {}", a.name, crate::media::size(a.size)),
+                        12.,
+                        400.,
+                        t.fg,
+                    )
+                    .truncate()
+                    .grow(1.)
+                    .min_w(0.),
+                )
+                .child(
+                    Button::new("×")
+                        .on_press(move |s: &mut State| s.remove_draft_attachment(index))
+                        .build(k)
+                        .key(format!("remove-attachment-{index}")),
+                ),
+        );
+    }
+    files
 }
 fn linking(s: &State, t: &Theme, k: &Kit, compact: bool) -> El {
     let mut qr = el()
@@ -683,6 +1036,7 @@ fn settings(s: &State, t: &Theme, k: &Kit) -> El {
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let t = Theme::new(s.dark);
     let k = t.kit();
+    let mut layer = Vec::new();
     let content = if s.settings {
         settings(s, &t, &k)
     } else if s.account.is_none() {
@@ -699,14 +1053,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             .min_w(0.)
             .child(sidebar(s, &t, &k))
             .child(el().w(1.).h_full().fill(t.line))
-            .child(conversation(
-                s,
-                &t,
-                &k,
-                cx.layout_size("conversation")
-                    .map(|r| (r[0] - 56.).clamp(180., 440.))
-                    .unwrap_or(320.),
-            ))
+            .child(conversation(s, &t, &k, cx, &mut layer))
     };
     let mut body = col()
         .key("app-root")
@@ -783,6 +1130,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                     .build(&k)
                     .key("recipient"),
             )
+            .child(contact_picker(s, &t))
             .child(
                 row()
                     .justify_end()
@@ -808,7 +1156,313 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(dialog),
         );
     }
-    body
+    message_dialogs(s, &t, &k, &mut layer);
+    rune_kit::root(body, layer)
+}
+fn contact_picker(s: &State, t: &Theme) -> El {
+    let query = s.recipient.text.trim().to_lowercase();
+    let mut contacts: Vec<_> = s
+        .conversations
+        .iter()
+        .filter(|c| {
+            !c.blocked
+                && (query.is_empty()
+                    || c.name.to_lowercase().contains(&query)
+                    || c.aliases.iter().any(|a| a.to_lowercase().contains(&query)))
+        })
+        .collect();
+    contacts.sort_by_key(|c| c.name.to_lowercase());
+    let mut choices = col().w_full().gap(2.);
+    for (i, c) in contacts.into_iter().take(50).enumerate() {
+        let id = c.id.clone();
+        choices = choices.child(
+            row()
+                .key(format!("contact-option-{i}"))
+                .role("button")
+                .label(&c.name)
+                .focusable(true)
+                .w_full()
+                .h(52.)
+                .px(8.)
+                .gap(10.)
+                .center_y()
+                .radius(8.)
+                .hover(t.hover)
+                .on_press(move |s: &mut State| {
+                    s.choose(id.clone());
+                    s.new_chat = false;
+                    s.recipient.clear();
+                    s.dirty = true;
+                    s.persist();
+                })
+                .child(avatar(&c.name, 34., i))
+                .child(
+                    col()
+                        .grow(1.)
+                        .min_w(0.)
+                        .gap(3.)
+                        .child(label(&c.name, 13., 600., t.fg).truncate())
+                        .child(
+                            label(
+                                if c.group {
+                                    "Group"
+                                } else {
+                                    c.aliases
+                                        .iter()
+                                        .find(|a| a.starts_with('+'))
+                                        .map(String::as_str)
+                                        .unwrap_or("Signal contact")
+                                },
+                                10.,
+                                400.,
+                                t.muted,
+                            )
+                            .truncate(),
+                        ),
+                ),
+        );
+    }
+    col()
+        .key("contact-picker")
+        .w_full()
+        .max_h(180.)
+        .min_h(0.)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(choices)
+}
+fn compose_context(s: &State, t: &Theme, k: &Kit) -> El {
+    if s.editing.is_none() && s.reply_to.is_none() {
+        return el();
+    }
+    let title = if s.editing.is_some() {
+        "Editing message".to_owned()
+    } else {
+        format!(
+            "Replying to {}",
+            s.reply_to
+                .as_ref()
+                .map(|q| s.display_name(&q.author))
+                .unwrap_or_default()
+        )
+    };
+    let preview = s
+        .reply_to
+        .as_ref()
+        .map(|q| q.body.clone())
+        .unwrap_or_default();
+    row()
+        .key("compose-context")
+        .w_full()
+        .gap(12.)
+        .center_y()
+        .padding(10.)
+        .radius(8.)
+        .fill(t.hover)
+        .border_sides([0., 0., 0., 3.], t.blue)
+        .child(
+            col()
+                .grow(1.)
+                .min_w(0.)
+                .gap(4.)
+                .child(label(title, 12., 600., t.fg))
+                .child(label(preview, 11., 400., t.muted).truncate()),
+        )
+        .child(
+            Button::new("Cancel")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut State| {
+                    if s.editing.is_some() {
+                        s.cancel_edit();
+                    } else {
+                        s.reply_to = None;
+                        s.dirty = true;
+                        s.persist();
+                    }
+                })
+                .build(k)
+                .key("cancel-compose-context"),
+        )
+}
+fn message_dialogs(s: &State, t: &Theme, k: &Kit, layer: &mut Vec<El>) {
+    if let Some((peer, id)) = &s.reaction_target {
+        let mut choices = row().gap(8.).flex_wrap();
+        for emoji in ["👍", "❤️", "😂", "😮", "😢", "🙏"] {
+            let peer = peer.clone();
+            let id = *id;
+            choices = choices.child(
+                Button::new(emoji)
+                    .on_press(move |s: &mut State| {
+                        s.queue_action(
+                            &peer,
+                            id,
+                            crate::model::ActionKind::Reaction {
+                                emoji: emoji.into(),
+                                remove: false,
+                            },
+                        );
+                    })
+                    .build(k)
+                    .key(format!("react-{emoji}")),
+            );
+        }
+        Dialog::new("reaction", "React to message")
+            .fit()
+            .open(true)
+            .width(420.)
+            .on_close(|s: &mut State| s.reaction_target = None)
+            .child(choices.padding(16.))
+            .build(k, layer);
+    }
+    if let Some((peer, id, everyone)) = &s.delete_confirmation {
+        let peer = peer.clone();
+        let id = *id;
+        let everyone = *everyone;
+        let body = col()
+            .gap(18.)
+            .child(
+                label(
+                    if everyone {
+                        "Delete this message for everyone in this conversation?"
+                    } else {
+                        "Delete this message from this device?"
+                    },
+                    13.,
+                    400.,
+                    t.fg,
+                )
+                .wrap(),
+            )
+            .child(
+                row()
+                    .justify_end()
+                    .gap(8.)
+                    .child(
+                        Button::new("Cancel")
+                            .variant(ButtonVariant::Ghost)
+                            .on_press(|s: &mut State| s.delete_confirmation = None)
+                            .build(k),
+                    )
+                    .child(
+                        Button::new(if everyone {
+                            "Delete for everyone"
+                        } else {
+                            "Delete for me"
+                        })
+                        .variant(ButtonVariant::Danger)
+                        .on_press(move |s: &mut State| {
+                            if everyone {
+                                s.queue_action(&peer, id, crate::model::ActionKind::Delete);
+                                s.delete_confirmation = None;
+                            } else {
+                                s.delete_for_me(&peer, id);
+                            }
+                        })
+                        .build(k)
+                        .key("confirm-message-delete"),
+                    ),
+            );
+        Dialog::new("delete-message", "Delete message")
+            .fit()
+            .open(true)
+            .width(440.)
+            .on_close(|s: &mut State| s.delete_confirmation = None)
+            .child(body)
+            .build(k, layer);
+    }
+    if let Some((peer, id)) = &s.message_details
+        && let Some(m) = s.find_message(peer, *id)
+    {
+        let time = chrono::DateTime::from_timestamp_millis(m.latest_timestamp() as i64)
+            .map(|d| {
+                d.with_timezone(&chrono::Local)
+                    .format("%b %d, %Y · %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let mut details = col()
+            .gap(14.)
+            .child(label(
+                if m.outgoing {
+                    "You".to_owned()
+                } else {
+                    s.display_name(&m.sender)
+                },
+                14.,
+                600.,
+                t.fg,
+            ))
+            .child(label(time, 12., 400., t.muted))
+            .child(
+                label(
+                    if m.deleted {
+                        "This message was deleted"
+                    } else {
+                        &m.body
+                    },
+                    14.,
+                    400.,
+                    t.fg,
+                )
+                .wrap_anywhere()
+                .selectable(true),
+            );
+        if m.outgoing {
+            details = details.child(label(format!("Status: {:?}", m.delivery), 12., 500., t.fg));
+            for (recipient, delivery) in &m.receipts {
+                details = details.child(label(
+                    format!("{} · {:?}", s.display_name(recipient), delivery),
+                    12.,
+                    400.,
+                    t.muted,
+                ));
+            }
+        }
+        if !m.edit_history.is_empty() {
+            details = details.child(label("Edit history", 14., 600., t.fg));
+            for version in m.edit_history.iter().rev() {
+                details = details.child(
+                    col()
+                        .gap(4.)
+                        .padding(10.)
+                        .radius(6.)
+                        .fill(t.hover)
+                        .child(label(clock(version.timestamp), 10., 400., t.muted))
+                        .child(label(&version.body, 13., 400., t.fg).wrap_anywhere()),
+                );
+            }
+        }
+        if s.sync_ledger
+            .actions
+            .iter()
+            .any(|a| a.conversation == *peer && a.message == *id && a.failed)
+            || m.delivery == Delivery::Failed
+        {
+            let peer = peer.clone();
+            let id = *id;
+            details = details.child(
+                Button::new("Retry")
+                    .on_press(move |s: &mut State| s.retry_message(&peer, id))
+                    .build(k)
+                    .key("retry-message-action"),
+            );
+        }
+        Dialog::new("message-details", "Message details")
+            .fit()
+            .open(true)
+            .width(480.)
+            .on_close(|s: &mut State| s.message_details = None)
+            .child(
+                col()
+                    .max_h(400.)
+                    .scroll(ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .child(details),
+            )
+            .build(k, layer);
+    }
 }
 fn demo(s: &mut State) {
     s.demo = true;
@@ -878,6 +1532,108 @@ fn demo(s: &mut State) {
 }
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("attachments", |s| {
+        demo(s);
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        let image = cache.load(include_bytes!("../assets/fixtures/landscape.png").as_slice());
+        image.wait().expect("fixture PNG");
+        s.media_images.insert("fixture-photo".into(), image);
+        s.media_cache = Some(cache);
+        s.conversations[0].messages.last_mut().unwrap().attachments =
+            vec![crate::model::Attachment {
+                id: "sample.png".into(),
+                name: "Weekend.png".into(),
+                content_type: "image/png".into(),
+                size: 42133,
+                media_id: Some("fixture-photo".into()),
+                ..Default::default()
+            }];
+    }),
+    ("attachment-draft", |s| {
+        demo(s);
+        s.conversations[0].draft_attachments = vec![crate::model::Attachment {
+            name: "Trip itinerary.pdf".into(),
+            content_type: "application/pdf".into(),
+            size: 184289,
+            media_id: Some("fixture-document".into()),
+            ..Default::default()
+        }];
+        s.composer
+            .replace_text("Here are the details for the trip.");
+    }),
+    ("multiline", |s| {
+        demo(s);
+        s.composer
+            .replace_text("Saturday plans:\nCoffee at 10\nWalk by the lake\nLunch afterward");
+    }),
+    ("disappearing", |s| {
+        demo(s);
+        s.conversations[0].expiration = 86400;
+        s.conversations[0].messages.last_mut().unwrap().expires_in = 86400;
+    }),
+    ("reply", |s| {
+        demo(s);
+        s.reply_to = Some(crate::model::Quote {
+            timestamp: s.conversations[0].messages[0].timestamp,
+            author: "demo-0".into(),
+            body: s.conversations[0].messages[0].body.clone(),
+        });
+        s.composer.replace_text("Let's do it!");
+    }),
+    ("quoted", |s| {
+        demo(s);
+        s.conversations[0].messages[4].quote = Some(crate::model::Quote {
+            timestamp: s.conversations[0].messages[0].timestamp,
+            author: "demo-0".into(),
+            body: s.conversations[0].messages[0].body.clone(),
+        });
+    }),
+    ("reactions", |s| {
+        demo(s);
+        s.conversations[0].messages[0]
+            .reactions
+            .insert("Preview account".into(), "👍".into());
+        s.conversations[0].messages[0]
+            .reactions
+            .insert("demo-0".into(), "❤️".into());
+    }),
+    ("editing", |s| {
+        demo(s);
+        s.editing = Some(6);
+        s.composer
+            .replace_text("Sounds like a plan. I'll bring tea this time.");
+    }),
+    ("message-menu", |s| {
+        demo(s);
+        s.message_context = Some(crate::actions::MessageContext {
+            conversation: "demo-0".into(),
+            message: 0,
+            point: rune::PointerPress { x: 520., y: 170. },
+        });
+    }),
+    ("message-details", |s| {
+        demo(s);
+        s.conversations[0].messages[4].edited = true;
+        s.conversations[0].messages[4].edited_at =
+            Some(s.conversations[0].messages[4].timestamp + 1000);
+        let original_timestamp = s.conversations[0].messages[4].timestamp - 1000;
+        s.conversations[0].messages[4]
+            .edit_history
+            .push(crate::model::EditVersion {
+                timestamp: original_timestamp,
+                body: "How does Friday look?".into(),
+                ..crate::model::EditVersion::default()
+            });
+        s.message_details = Some(("demo-0".into(), 4));
+    }),
+    ("reaction-picker", |s| {
+        demo(s);
+        s.reaction_target = Some(("demo-0".into(), 0));
+    }),
+    ("delete-confirm", |s| {
+        demo(s);
+        s.delete_confirmation = Some(("demo-0".into(), 6, true));
+    }),
     ("typing", |s| {
         demo(s);
         s.conversations[0].typing.insert(

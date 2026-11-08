@@ -23,8 +23,8 @@ This repository is a working first implementation, not the completed exact clone
 ## Not implemented / not equivalent to Signal Desktop
 
 - Phone history transfer and complete cross-device conversation metadata synchronization.
-- Audio/video calls, screen sharing, attachments, voice notes, stickers, reactions, quotes, edit/delete, stories.
-- Disappearing-message lifecycle and view-once support. Their message contents are excluded from this UI.
+- Audio/video calls, screen sharing, voice recording/playback, stickers, stories and a full emoji picker.
+- View-once support; its contents remain excluded. Disappearing read/send expiry is implemented and still needs live integration coverage.
 - Safety-number display/verification and trust management. Identity failures are errors, never auto-trusted.
 - Block management, group administration, desktop notifications, tray, auto-update.
 - Full localization, exact icon/spacing parity, platform-specific menu integration, comprehensive accessibility audit.
@@ -33,7 +33,7 @@ This repository is a working first implementation, not the completed exact clone
 
 ## Validation and remaining release gates
 
-Automated tests cover message-envelope parsing, groups, numberless accounts, failed send semantics, provisioning expiry, replay deduplication, draft retention, and native pointer actions. The visual harness renders ten states at 760×560, 1120×760 and 1440×900, saves PNGs/trees, checks named controls and bounds, and fails on Rune warnings. An independent OpenCV decoder reads the dense QR fixture from screenshots at all three sizes. Palette tests enforce at least 4.5:1 text contrast in both themes. This is layout evidence, not a pixel-exact comparison with official Signal Desktop.
+Automated tests cover message-envelope parsing, groups, numberless accounts, failed send semantics, provisioning expiry, replay deduplication, draft retention, and native pointer actions. The visual harness renders twenty-six states at 760×560, 1120×760 and 1440×900, saves PNGs/trees, checks named controls and bounds, and fails on Rune warnings. An independent OpenCV decoder reads the dense QR fixture from screenshots at all three sizes. Palette tests enforce at least 4.5:1 text contrast in both themes. This is layout evidence, not a pixel-exact comparison with official Signal Desktop.
 
 The user has confirmed phone pairing and basic message exchange. The live cross-device cases in the parity matrix still require verification.
 
@@ -62,6 +62,8 @@ The repository and CI artifacts can be public during development. They must not 
 
 The checked-in design report and representative screenshots use fictional data only. CI evidence belongs to each run's exact commit and is available as the `design-evidence` artifact. Neither automated layout checks nor these manual inspections establish exact visual parity with Signal Desktop.
 
-The active, versioned feature inventory is [PARITY.md](PARITY.md). Current local foundation validation: 31 Rust tests plus five engine-extension privacy checks, strict Clippy, and 42 native renders passed. Full client parity remains in progress.
+The active, versioned feature inventory is [PARITY.md](PARITY.md). Current local validation: 55 Rust tests plus seven engine-extension checks, strict Clippy, and 78 native renders. Full client parity remains in progress.
 
 The Linux restart test exposed a retained lock descriptor; explicit release on history teardown and retained-descriptor/worker-restart regression tests now cover that case. The source-available engine extension enforces the phone typing setting at command execution and lets privacy-suppressed receipts complete their linked read sync.
+
+Message-action and media checkpoint: durable sender-scoped edit/reaction/delete reduction, historical receipts, content-free replay tombstones, reply/edit draft recovery, multiline/IME handling, bundled color emoji, keyed history indexes with schema migration, encrypted media import/send/export and offline disappearing-message expiry. Tests cover a file-only send through actual SQLite import, restart, commit-before-send and blob deletion. Phone sync includes the original expiry start time through the GPL engine extension. Live device tests for these additions remain open.

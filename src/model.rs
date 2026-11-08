@@ -31,7 +31,7 @@ pub struct Attachment {
     pub name: String,
     pub content_type: String,
     pub size: u64,
-    pub local_path: Option<String>,
+    pub media_id: Option<String>,
     pub voice_note: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -57,9 +57,87 @@ pub struct Message {
     pub expires_at: Option<u64>,
     pub edited: bool,
     pub deleted: bool,
+    pub hidden: bool,
+    pub tombstone_timestamps: Vec<u64>,
     pub quote: Option<Quote>,
     pub attachments: Vec<Attachment>,
     pub reactions: BTreeMap<String, String>,
+    pub edited_at: Option<u64>,
+    pub edit_history: Vec<EditVersion>,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditVersion {
+    pub timestamp: u64,
+    pub body: String,
+    pub quote: Option<Quote>,
+    pub delivery: Delivery,
+    pub receipts: BTreeMap<String, Delivery>,
+}
+impl Message {
+    pub fn start_expiration(&mut self, at: u64) {
+        if self.expires_in == 0 || self.hidden {
+            return;
+        }
+        let deadline = at.saturating_add(u64::from(self.expires_in) * 1000);
+        self.expires_at = Some(self.expires_at.map_or(deadline, |old| old.min(deadline)));
+    }
+    pub fn latest_timestamp(&self) -> u64 {
+        self.edited_at.unwrap_or(self.timestamp)
+    }
+    pub fn matches_timestamp(&self, timestamp: u64) -> bool {
+        self.tombstone_timestamps.contains(&timestamp)
+            || self.timestamp == timestamp
+            || self.edited_at == Some(timestamp)
+            || self.edit_history.iter().any(|v| v.timestamp == timestamp)
+    }
+    pub fn can_edit(&self, note_to_self: bool) -> bool {
+        self.outgoing
+            && !self.deleted
+            && !self.hidden
+            && !self.body.is_empty()
+            && !matches!(self.delivery, Delivery::Pending | Delivery::Failed)
+            && self.edit_history.len() < 10
+            && (note_to_self || now_ms().saturating_sub(self.timestamp) < 86_400_000)
+    }
+    pub fn can_delete_for_everyone(&self) -> bool {
+        self.outgoing
+            && !self.deleted
+            && !self.hidden
+            && self.delivery != Delivery::Pending
+            && now_ms().saturating_sub(self.timestamp) < 86_400_000
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ActionKind {
+    Reaction { emoji: String, remove: bool },
+    Edit { body: String, quote: Option<Quote> },
+    Delete,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QueuedAction {
+    pub id: u64,
+    pub conversation: String,
+    pub message: u64,
+    pub target: u64,
+    pub author: String,
+    pub kind: ActionKind,
+    pub failed: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Mutation {
+    pub conversation: String,
+    pub author: String,
+    pub actor: String,
+    pub target: u64,
+    pub at: u64,
+    pub kind: ActionKind,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DraftBackup {
+    pub body: String,
+    pub quote: Option<Quote>,
 }
 #[derive(Clone, Debug)]
 pub struct TypingPresence {
@@ -72,15 +150,21 @@ pub struct Conversation {
     pub id: String,
     pub name: String,
     pub group: bool,
+    pub active: bool,
     pub aliases: Vec<String>,
     pub messages: Vec<Message>,
     pub unread: u32,
     pub draft: String,
+    pub draft_quote: Option<Quote>,
+    pub draft_edit: Option<u64>,
+    pub draft_backup: Option<DraftBackup>,
+    pub draft_attachments: Vec<Attachment>,
     pub pinned: u64,
     pub archived: bool,
     pub blocked: bool,
     pub muted_until: Option<u64>,
     pub expiration: u32,
+    pub expiration_updated_at: u64,
     pub members: Vec<String>,
     #[serde(skip)]
     pub typing: HashMap<String, TypingPresence>,
@@ -95,6 +179,9 @@ impl Conversation {
             ..Self::default()
         }
     }
+    pub fn last_message(&self) -> Option<&Message> {
+        self.messages.iter().rev().find(|m| !m.hidden)
+    }
     pub fn matches(&self, id: &str) -> bool {
         self.id == id || self.aliases.iter().any(|a| a == id)
     }
@@ -102,7 +189,7 @@ impl Conversation {
         self.unread = self
             .messages
             .iter()
-            .filter(|m| !m.outgoing && !m.read)
+            .filter(|m| !m.outgoing && !m.read && !m.hidden)
             .count() as u32;
     }
     pub fn sort_messages(&mut self) {
@@ -111,7 +198,20 @@ impl Conversation {
     pub fn apply_receipt(&mut self, sender: &str, timestamps: &[u64], delivery: Delivery) -> bool {
         let mut changed = false;
         for m in &mut self.messages {
-            if m.outgoing && timestamps.contains(&m.timestamp) {
+            if !m.outgoing {
+                continue;
+            }
+            for version in &mut m.edit_history {
+                if timestamps.contains(&version.timestamp) {
+                    version.delivery.advance(delivery);
+                    version
+                        .receipts
+                        .entry(sender.to_owned())
+                        .or_default()
+                        .advance(delivery);
+                }
+            }
+            if timestamps.contains(&m.latest_timestamp()) {
                 let before = m.delivery;
                 m.delivery.advance(delivery);
                 m.receipts
@@ -132,6 +232,7 @@ pub struct Preferences {
     pub read_receipts: bool,
     pub notifications: bool,
     pub last_outgoing_timestamp: u64,
+    pub next_message_id: u64,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -141,6 +242,7 @@ impl Default for Preferences {
             read_receipts: true,
             notifications: true,
             last_outgoing_timestamp: 0,
+            next_message_id: 0,
         }
     }
 }
@@ -169,6 +271,9 @@ impl Default for EngineConfiguration {
 pub struct SyncLedger {
     pub receipts: BTreeMap<String, BTreeMap<u64, Delivery>>,
     pub read_through: BTreeMap<String, u64>,
+    pub read_at: BTreeMap<String, BTreeMap<u64, u64>>,
+    pub actions: Vec<QueuedAction>,
+    pub mutations: Vec<Mutation>,
 }
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -198,53 +303,51 @@ pub fn account_id(v: &Value) -> Option<String> {
         .or(v["number"].as_str())
         .map(str::to_owned)
 }
-pub struct Incoming {
+pub struct DataContext<'a> {
     pub conversation: String,
     pub name: String,
     pub group: bool,
-    pub body: String,
-    pub outgoing: bool,
-    pub timestamp: u64,
-    pub sender: String,
     pub aliases: Vec<String>,
+    pub sender: String,
+    pub outgoing: bool,
+    pub data: &'a Value,
+    pub edit_target: Option<u64>,
 }
-pub fn incoming(v: &Value) -> Option<Incoming> {
-    let p = &v["params"];
-    let e = p
-        .get("envelope")
-        .or_else(|| p.get("result").and_then(|r| r.get("envelope")))?;
-    let (m, outgoing) = if let Some(m) = e.get("dataMessage") {
-        (m, false)
+pub fn data_context(v: &Value) -> Option<DataContext<'_>> {
+    let e = envelope(v)?;
+    let sent = e["syncMessage"].get("sentMessage");
+    let outgoing = sent.is_some();
+    let edit = if outgoing {
+        sent?.get("editMessage")
     } else {
-        (e.get("syncMessage")?.get("sentMessage")?, true)
+        e.get("editMessage")
     };
-    // Never retain content whose disappearing/view-once semantics this build cannot honor.
-    if m["viewOnce"].as_bool() == Some(true) || m["expiresInSeconds"].as_u64().unwrap_or(0) > 0 {
-        return None;
-    }
-    let body = m["message"].as_str()?.to_string();
-    if body.is_empty() {
-        return None;
-    }
-    let group_id = m["groupInfo"]["groupId"]
+    let data = edit
+        .and_then(|edit| edit.get("dataMessage"))
+        .or_else(|| if outgoing { sent } else { e.get("dataMessage") })?;
+    let group_id = data["groupInfo"]["groupId"]
         .as_str()
-        .or(m["groupV2"]["id"].as_str());
-    let peer = if outgoing {
+        .or(data["groupV2"]["id"].as_str());
+    let sender = source(e).unwrap_or_default().to_owned();
+    let destination = sent.and_then(|m| {
         m["destinationUuid"]
             .as_str()
             .or(m["destinationNumber"].as_str())
             .or(m["destination"].as_str())
+    });
+    let peer = if outgoing {
+        destination.or_else(|| source(e))
     } else {
-        e["sourceUuid"]
-            .as_str()
-            .or(e["sourceNumber"].as_str())
-            .or(e["source"].as_str())
+        Some(sender.as_str())
     };
-    let conversation = group_id.or(peer)?.to_string();
+    let conversation = group_id.or(peer)?.to_owned();
+    if conversation.is_empty() {
+        return None;
+    }
     let name = if group_id.is_some() {
-        m["groupInfo"]["groupName"]
+        data["groupInfo"]["groupName"]
             .as_str()
-            .or(m["groupInfo"]["name"].as_str())
+            .or(data["groupInfo"]["name"].as_str())
             .unwrap_or("Group")
     } else if outgoing {
         &conversation
@@ -254,32 +357,113 @@ pub fn incoming(v: &Value) -> Option<Incoming> {
             .filter(|s| !s.is_empty())
             .unwrap_or(&conversation)
     }
-    .to_string();
-    Some(Incoming {
-        conversation: conversation.clone(),
+    .to_owned();
+    let aliases = if group_id.is_some() {
+        vec![conversation.clone()]
+    } else {
+        let fields = if outgoing {
+            ["destinationUuid", "destinationNumber", "destination"]
+        } else {
+            ["sourceUuid", "sourceNumber", "source"]
+        };
+        let object = if outgoing { sent? } else { e };
+        fields
+            .iter()
+            .filter_map(|f| object[f].as_str().map(str::to_owned))
+            .collect()
+    };
+    let aliases = if aliases.is_empty() {
+        vec![conversation.clone()]
+    } else {
+        aliases
+    };
+    Some(DataContext {
+        conversation,
         name,
         group: group_id.is_some(),
-        body,
-        sender: source(e).unwrap_or_default().to_owned(),
-        aliases: if group_id.is_some() {
-            vec![conversation.clone()]
-        } else {
-            let fields = if outgoing {
-                ["destinationUuid", "destinationNumber", "destination"]
-            } else {
-                ["sourceUuid", "sourceNumber", "source"]
-            };
-            let obj = if outgoing { m } else { e };
-            fields
-                .iter()
-                .filter_map(|f| obj[f].as_str().map(str::to_owned))
-                .collect()
-        },
+        aliases,
+        sender,
         outgoing,
+        data,
+        edit_target: edit.and_then(|e| e["targetSentTimestamp"].as_u64()),
+    })
+}
+pub fn quote(v: &Value) -> Option<Quote> {
+    let author = v["authorUuid"]
+        .as_str()
+        .or(v["authorNumber"].as_str())
+        .or(v["author"].as_str())?;
+    Some(Quote {
+        timestamp: v["id"].as_u64()?,
+        author: author.to_owned(),
+        body: v["text"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+pub struct Incoming {
+    pub conversation: String,
+    pub name: String,
+    pub group: bool,
+    pub body: String,
+    pub outgoing: bool,
+    pub timestamp: u64,
+    pub sender: String,
+    pub aliases: Vec<String>,
+    pub quote: Option<Quote>,
+    pub expires_in: u32,
+    pub expiration_start: Option<u64>,
+    pub attachments: Vec<Attachment>,
+}
+pub fn incoming(v: &Value) -> Option<Incoming> {
+    let context = data_context(v)?;
+    if context.edit_target.is_some() {
+        return None;
+    }
+    let m = context.data;
+    if m["viewOnce"].as_bool() == Some(true) || m["isExpirationUpdate"].as_bool() == Some(true) {
+        return None;
+    }
+    let body = m["message"].as_str().unwrap_or_default().to_owned();
+    let attachments: Vec<_> = m["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(32)
+        .map(|a| Attachment {
+            id: a["id"].as_str().unwrap_or_default().to_owned(),
+            name: crate::media::safe_name(a["filename"].as_str().unwrap_or("Attachment")),
+            content_type: a["contentType"]
+                .as_str()
+                .unwrap_or("application/octet-stream")
+                .to_owned(),
+            size: a["size"].as_u64().unwrap_or(0),
+            voice_note: a["isVoiceNote"].as_bool().unwrap_or(false),
+            ..Default::default()
+        })
+        .collect();
+    if body.is_empty() && attachments.is_empty() {
+        return None;
+    }
+    Some(Incoming {
+        conversation: context.conversation,
+        name: context.name,
+        group: context.group,
+        body,
+        outgoing: context.outgoing,
         timestamp: m["timestamp"]
             .as_u64()
-            .or(e["timestamp"].as_u64())
+            .or(envelope(v)?["timestamp"].as_u64())
             .unwrap_or(0),
+        sender: context.sender,
+        aliases: context.aliases,
+        quote: quote(&m["quote"]),
+        attachments,
+        expires_in: m["expiresInSeconds"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        expiration_start: envelope(v)?["syncMessage"]["sentMessage"]["expirationStartTimestamp"]
+            .as_u64()
+            .filter(|ts| *ts > 0),
     })
 }
 /// Canonicalize display-formatted international numbers without guessing a country.
@@ -342,7 +526,7 @@ mod tests {
     }
     #[test]
     fn ephemeral_content_is_not_retained() {
-        for options in [json!({"viewOnce":true}), json!({"expiresInSeconds":30})] {
+        for options in [json!({"viewOnce":true}), json!({"isExpirationUpdate":true})] {
             let mut m = json!({"message":"secret","timestamp":42});
             m.as_object_mut()
                 .unwrap()

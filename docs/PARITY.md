@@ -14,9 +14,9 @@ The user has confirmed that phone pairing and basic message exchange work. That 
 | Typing | Send/start/refresh/stop, foreground gating, receive timeout, engine-enforced phone privacy | Live phone/client verification |
 | Delivery/read receipts | Monotonic per-recipient state, foreground-only read and linked read sync | Live direct/group and privacy-setting verification |
 | Conversation pins/archive | Durable local controls and ordering | Cross-device metadata synchronization and context menu parity |
-| Disappearing/view-once messages | Currently excluded from the UI | Correct read/expiry/deletion and view-once media lifecycle |
-| Replies/reactions/edit/delete | Not implemented yet | Local UI, real protocol commands, sync and retry behavior |
-| Attachments/media/voice notes | Not implemented yet | File picker/drop/paste, encrypted cache, previews, save/open, playback/recording |
+| Disappearing/view-once messages | Read/send expiry, phone start-time sync, offline/restart purge and replay tombstones; view-once excluded | Timer controls and notices, live expiry tests, view-once media lifecycle |
+| Replies/reactions/edit/delete | Native menus, quotes, edits/history, reactions, local/delete-for-everyone, durable retries, authenticated sync mutations | Live cross-device direct/group verification, full emoji picker |
+| Attachments/media/voice notes | File picker/drop, encrypted cache, file-only send, PNG/JPEG previews and native Save dialog | Paste, full-size viewer, remaining media formats, playback/recording, live integration |
 | Group management | Discovery and messaging | Members/admins, invites, requests, permissions, timer and link management |
 | Identity/privacy | Engine trust failures fail closed | Safety numbers, verify/unverify, block/request UI, phone preference reflection |
 | Calls | Engine exposes voice-call commands | Real call UI, audio devices/mute, video/group calls and screen sharing |

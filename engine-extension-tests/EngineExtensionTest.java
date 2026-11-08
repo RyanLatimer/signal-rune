@@ -51,6 +51,16 @@ public final class EngineExtensionTest {
         if (typing.get() != 2) throw new AssertionError("Enabled typing did not reach the engine transport");
         new SendReceiptCommand().handleCommand(new Namespace(Map.of("recipient", "+12025550123", "target-timestamp", List.of(42L))), disabled, writer);
         if (read.get() != 1 || !Boolean.TRUE.equals(((Map<?, ?>)result.get()).get("privacySuppressed"))) throw new AssertionError("Privacy-suppressed receipt should complete after the linked read sync");
-        System.out.println("Engine extension: privacy read, typing suppression, STOP, enabled typing, and read-sync completion passed");
+        var transcript = new org.asamk.signal.manager.api.MessageEnvelope.Sync.Sent(123L, 321L, Optional.empty(), java.util.Set.of(), Optional.empty(), Optional.empty(), Optional.empty());
+        var syncType = Class.forName("org.asamk.signal.json.JsonSyncDataMessage");
+        var convert = syncType.getDeclaredMethod("from", transcript.getClass(), Manager.class);
+        convert.setAccessible(true);
+        var converted = convert.invoke(null, transcript, disabled);
+        var expiry = syncType.getDeclaredMethod("expirationStartTimestamp");
+        expiry.setAccessible(true);
+        if (!Long.valueOf(321L).equals(expiry.invoke(converted))) throw new AssertionError("Phone expiry start was lost in serialization");
+        var inline = org.asamk.signal.manager.util.DataURI.of("data:text/plain;filename=a%2Bb%3B%20%F0%9F%98%83.txt;base64,cGF5bG9hZA==");
+        if (!"a+b; 😃.txt".equals(inline.parameter().get("filename")) || !java.util.Arrays.equals(inline.data(), "payload".getBytes(java.nio.charset.StandardCharsets.UTF_8))) throw new AssertionError("Attachment filename/data URI did not round trip through the actual engine parser");
+        System.out.println("Engine extension: five privacy checks, phone expiry serialization, and attachment URI round trip passed");
     }
 }

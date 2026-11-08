@@ -334,5 +334,293 @@
       900
     ],
     "failures": []
+  },
+  {
+    "scene": "reply",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reply",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reply",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "quoted",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "quoted",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "quoted",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reactions",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reactions",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reactions",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "editing",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "editing",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "editing",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "message-menu",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "message-menu",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "message-menu",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "message-details",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "message-details",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "message-details",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reaction-picker",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reaction-picker",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "reaction-picker",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "delete-confirm",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "delete-confirm",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "delete-confirm",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "attachments",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "attachments",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "attachments",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "attachment-draft",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "attachment-draft",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "attachment-draft",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "multiline",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "multiline",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "multiline",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "disappearing",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "disappearing",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "disappearing",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
   }
 ]

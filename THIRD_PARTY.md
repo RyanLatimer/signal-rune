@@ -8,6 +8,7 @@ Signal Rune is an independent project, not an official Signal product. No Signal
 - qrcode: https://github.com/kennytm/qrcode-rust, MIT/Apache-2.0.
 - directories: https://github.com/dirs-dev/directories-rs, MIT/Apache-2.0.
 - serde and serde_json: https://github.com/serde-rs, MIT/Apache-2.0.
+- Noto Color Emoji v2.051: https://github.com/googlefonts/noto-emoji/tree/8998f5dd683424a73e2314a8c1f1e359c19e8742, SIL Open Font License 1.1. The unmodified font is embedded so emoji remain available on machines without an installed emoji font. License: `licenses/NotoEmoji-OFL.txt`. The bundled Inter files come from the pinned Rune revision and use the existing Inter license in `licenses/`.
 
 License texts for Rune, its embedded fonts and signal-cli are included in `licenses/` and copied into build archives.
 
