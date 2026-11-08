@@ -13,7 +13,7 @@ pub enum Event {
     Stopped,
 }
 pub struct Bridge {
-    child: Child,
+    child: Option<Child>,
     requests: Sender<Value>,
     pub events: Receiver<Event>,
 }
@@ -61,7 +61,7 @@ impl Bridge {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
         }
-        let mut child = cmd.arg("--data-dir").arg(dir).arg("jsonRpc")
+        let mut child = cmd.arg("--data-dir").arg(dir).arg("jsonRpc").arg("--receive-mode=manual")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
             .map_err(|_| "Signal engine could not start. Install signal-cli 0.14.10 and Java 25, or set SIGNAL_RUNE_CLI to its launcher. Then choose Retry connection.".to_string())?;
         let input = child.stdin.take().ok_or("No engine input")?;
@@ -93,10 +93,24 @@ impl Bridge {
             wake();
         });
         Ok(Self {
-            child,
+            child: Some(child),
             requests,
             events: event_rx,
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn mock() -> (Self, Receiver<Value>, Sender<Event>) {
+        let (requests, request_rx) = mpsc::channel();
+        let (event_tx, events) = mpsc::channel();
+        (
+            Self {
+                child: None,
+                requests,
+                events,
+            },
+            request_rx,
+            event_tx,
+        )
     }
     pub fn send(&self, v: Value) -> Result<(), String> {
         self.requests
@@ -106,8 +120,10 @@ impl Bridge {
 }
 impl Drop for Bridge {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 pub fn data_dir() -> Result<PathBuf, String> {

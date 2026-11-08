@@ -12,7 +12,7 @@ args = parser.parse_args()
 out = Path('target/design')
 out.mkdir(parents=True, exist_ok=True)
 results = []
-scenes = ['chat-dark', 'chat-light', 'link-dark', 'link-light', 'settings', 'new-message', 'empty', 'error', 'long-message', 'qr-preview']
+scenes = ['chat-dark', 'chat-light', 'link-dark', 'link-light', 'settings', 'new-message', 'empty', 'error', 'long-message', 'qr-preview', 'typing', 'receipts', 'pinned', 'archived']
 for scene in scenes:
     for width, height in [(1120, 760), (760, 560), (1440, 900)]:
         name = f'{scene}-{width}x{height}'
@@ -24,8 +24,10 @@ for scene in scenes:
         failures = list(data.get('warnings', []))
         elements = {e['key']: e for e in data['elements'] if 'key' in e}
         critical = ['settings']
-        if scene.startswith('chat') or scene == 'long-message':
-            critical += ['search', 'new-message', 'composer', 'send', 'conversation']
+        if scene.startswith('chat') or scene in ['long-message', 'typing', 'receipts', 'pinned']:
+            critical += ['search', 'new-message', 'composer', 'send', 'conversation', 'pin-conversation', 'archive-conversation']
+        if scene == 'typing':
+            critical += ['typing-indicator']
         if scene == 'new-message':
             critical = ['new-chat-dialog', 'recipient', 'start-chat']
         if scene == 'settings':

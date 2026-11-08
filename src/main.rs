@@ -1,4 +1,6 @@
 mod model;
+mod storage;
+mod sync;
 mod transport;
 mod ui;
 use model::{Conversation, Delivery, Message};
@@ -13,6 +15,9 @@ enum Pending {
     Contacts,
     Groups,
     Sync,
+    Subscribe,
+    Transient,
+    Receipt(String, Vec<u64>),
     Send(String, u64),
 }
 pub struct State {
@@ -21,6 +26,7 @@ pub struct State {
     pending: HashMap<u64, Pending>,
     serial: u64,
     account: Option<String>,
+    account_aliases: Vec<String>,
     status: String,
     error: Option<String>,
     qr: Option<qrcode::QrCode>,
@@ -34,6 +40,24 @@ pub struct State {
     settings: bool,
     new_chat: bool,
     demo: bool,
+    store: Option<storage::Worker>,
+    history_ready: bool,
+    history_protection: String,
+    generation: u64,
+    saved_generation: u64,
+    dirty: bool,
+    preferences: model::Preferences,
+    sync_ledger: model::SyncLedger,
+    clock: f64,
+    typing_outgoing: Option<sync::OutgoingTyping>,
+    window_focused: bool,
+    messages_at_bottom: bool,
+    show_archived: bool,
+    receipt_retry_at: f64,
+    reconnect_attempt: u32,
+    reconnect_at: Option<f64>,
+    draft_save_at: Option<f64>,
+    draft_dirty: bool,
 }
 impl Default for State {
     fn default() -> Self {
@@ -43,6 +67,7 @@ impl Default for State {
             pending: HashMap::new(),
             serial: 0,
             account: None,
+            account_aliases: vec![],
             status: "Connecting to Signal engine…".into(),
             error: None,
             qr: None,
@@ -56,6 +81,24 @@ impl Default for State {
             settings: false,
             new_chat: false,
             demo: false,
+            store: None,
+            history_ready: false,
+            history_protection: "Opening history…".into(),
+            generation: 0,
+            saved_generation: 0,
+            dirty: false,
+            preferences: model::Preferences::default(),
+            sync_ledger: model::SyncLedger::default(),
+            clock: 0.,
+            typing_outgoing: None,
+            window_focused: false,
+            messages_at_bottom: true,
+            show_archived: false,
+            receipt_retry_at: 0.,
+            reconnect_attempt: 0,
+            reconnect_at: None,
+            draft_save_at: None,
+            draft_dirty: false,
         }
     }
 }
@@ -83,12 +126,8 @@ impl State {
     }
     fn connect(&mut self) {
         self.bridge = None;
-        let pending = std::mem::take(&mut self.pending);
-        for (_, p) in pending {
-            if let Pending::Send(peer, mid) = p {
-                self.delivery(&peer, mid, Delivery::Failed, 0);
-            }
-        }
+        self.pending.clear();
+        self.reconnect_at = None;
         self.linking = false;
         self.qr = None;
         let Some(wake) = self.wake.clone() else {
@@ -104,6 +143,7 @@ impl State {
             Err(e) => {
                 self.status = "Engine unavailable".into();
                 self.error = Some(e);
+                self.schedule_reconnect();
             }
         }
     }
@@ -118,15 +158,33 @@ impl State {
         self.request("startLink", json!({}), Pending::Link);
     }
     fn linked(&mut self, account: String) {
-        self.account = Some(account);
+        let same_identity = self.account.as_ref() == Some(&account);
+        let same_account = same_identity && self.history_ready;
+        self.account = Some(account.clone());
         self.qr = None;
         self.linking = false;
-        self.status = "Connected".into();
-        self.request("listContacts", json!({}), Pending::Contacts);
-        self.request("listGroups", json!({}), Pending::Groups);
-        self.request("sendSyncRequest", json!({}), Pending::Sync);
+        if same_account {
+            self.begin_sync();
+            return;
+        }
+        self.store = None;
+        self.history_ready = false;
+        if !same_identity {
+            self.conversations.clear();
+            self.sync_ledger = model::SyncLedger::default();
+            self.selected = None;
+            self.composer.clear();
+        }
+        self.status = "Opening encrypted history…".into();
+        if let Some(wake) = self.wake.clone() {
+            match storage::Worker::start(account, wake) {
+                Ok(worker) => self.store = Some(worker),
+                Err(e) => self.error = Some(e),
+            }
+        }
     }
     fn choose(&mut self, id: String) {
+        self.stop_typing();
         if let Some(old) = self
             .selected
             .as_ref()
@@ -135,11 +193,13 @@ impl State {
             old.draft = self.composer.text.clone();
         }
         if let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) {
-            c.unread = 0;
             self.composer.replace_text(c.draft.clone());
         }
         self.selected = Some(id);
         self.composer.focused = true;
+        self.messages_at_bottom = true;
+        self.mark_selected_read();
+        self.dirty = true;
     }
     fn new_conversation(&mut self) {
         let raw = self.recipient.text.trim();
@@ -147,6 +207,7 @@ impl State {
             self.error = Some("Enter a valid international phone number or account UUID.".into());
             return;
         };
+        let id = self.resolve_id(&id);
         if !self.conversations.iter().any(|c| c.id == id) {
             self.conversations
                 .insert(0, Conversation::new(id.clone(), id.clone(), false));
@@ -163,29 +224,41 @@ impl State {
         let Some(id) = self.selected.clone() else {
             return;
         };
-        let Some(c) = self.conversations.iter().find(|c| c.id == id) else {
+        if !self.history_ready || self.store.is_none() {
+            self.error = Some(
+                "Encrypted history must be available before sending. Your draft has been kept."
+                    .into(),
+            );
+            return;
+        }
+        self.stop_typing();
+        let timestamp =
+            model::now_ms().max(self.preferences.last_outgoing_timestamp.saturating_add(1));
+        self.preferences.last_outgoing_timestamp = timestamp;
+        let Some(c) = self.conversations.iter_mut().find(|c| c.id == id) else {
             return;
         };
-        let mut params = json!({"message":body});
-        params[if c.group { "groupId" } else { "recipient" }] = json!(id);
-        // A pending row appears only after the request was accepted by the transport.
-        let local_id = self.serial + 1;
-        if self
-            .request("send", params, Pending::Send(id.clone(), local_id))
-            .is_some()
-        {
-            let c = self.conversations.iter_mut().find(|c| c.id == id).unwrap();
-            c.messages.push(Message {
-                id: local_id,
-                body,
-                outgoing: true,
-                timestamp: 0,
-                delivery: Delivery::Pending,
-            });
-            c.draft.clear();
-            self.composer.clear();
-            tx.scroll_to_bottom("messages");
+        if c.blocked {
+            self.error = Some("Unblock this conversation before sending.".into());
+            return;
         }
+        c.messages.push(Message {
+            id: timestamp,
+            timestamp,
+            body,
+            outgoing: true,
+            sender: self.account.clone().unwrap_or_default(),
+            read: true,
+            delivery: Delivery::Pending,
+            ..Message::default()
+        });
+        c.draft.clear();
+        c.archived = false;
+        self.composer.clear();
+        self.dirty = true;
+        // The outbox is sent only after this generation commits to encrypted history.
+        self.persist();
+        tx.scroll_to_bottom("messages");
     }
     fn event(&mut self, v: Value, tx: &mut Tx) {
         if let Some(id) = v["id"].as_u64() {
@@ -194,10 +267,16 @@ impl State {
             };
             if v.get("error").is_some() {
                 // Do not put server payloads (which can contain message text/keys) into logs or screenshots.
-                self.error = Some(format!(
-                    "Signal request failed (code {}). Check your connection and try again.",
-                    v["error"]["code"]
-                ));
+                if !matches!(p, Pending::Transient | Pending::Receipt(..)) {
+                    self.error = Some(format!(
+                        "Signal request failed (code {}). Check your connection and try again.",
+                        v["error"]["code"]
+                    ));
+                }
+                if matches!(p, Pending::Receipt(..)) {
+                    self.receipt_retry_at = self.clock + 30.;
+                    tx.wake_after(std::time::Duration::from_secs(30));
+                }
                 if let Pending::Send(peer, mid) = p {
                     self.delivery(&peer, mid, Delivery::Failed, 0);
                 } else if matches!(p, Pending::Link | Pending::Finish) {
@@ -215,6 +294,10 @@ impl State {
                         .and_then(|a| a.first())
                         .and_then(model::account_id)
                     {
+                        self.account_aliases = ["number", "aci"]
+                            .iter()
+                            .filter_map(|f| r[0][f].as_str().map(str::to_owned))
+                            .collect();
                         self.linked(account);
                     } else {
                         self.status = "Ready to link your phone".into();
@@ -248,6 +331,10 @@ impl State {
                 }
                 Pending::Finish => {
                     if let Some(account) = model::account_id(r) {
+                        self.account_aliases = ["number", "aci"]
+                            .iter()
+                            .filter_map(|f| r[f].as_str().map(str::to_owned))
+                            .collect();
                         self.linked(account);
                     } else {
                         self.linking = false;
@@ -280,84 +367,41 @@ impl State {
                     }
                 }
                 Pending::Contacts | Pending::Groups => {
-                    let group = matches!(p, Pending::Groups);
                     if let Some(items) = r.as_array() {
-                        for item in items {
-                            let id = if group {
-                                item["id"].as_str().map(str::to_string)
-                            } else {
-                                model::account_id(item)
-                                    .or_else(|| item["uuid"].as_str().map(str::to_string))
-                            };
-                            if let Some(id) = id {
-                                let name = item["name"]
-                                    .as_str()
-                                    .filter(|s| !s.is_empty())
-                                    .unwrap_or(&id)
-                                    .to_string();
-                                if let Some(c) = self.conversations.iter_mut().find(|c| c.id == id)
-                                {
-                                    c.name = name;
-                                } else {
-                                    self.conversations.push(Conversation::new(id, name, group));
-                                }
+                        self.merge_contacts(items, matches!(p, Pending::Groups));
+                    }
+                }
+                Pending::Sync | Pending::Transient => {}
+                Pending::Subscribe => {
+                    self.status = "Connected".into();
+                    self.reconnect_attempt = 0;
+                    self.reconnect_at = None;
+                    self.error = None;
+                    self.flush_outbox();
+                }
+                Pending::Receipt(peer, ids) => {
+                    if r["results"].as_array().is_some_and(|a| {
+                        a.iter()
+                            .any(|x| x["type"].as_str().is_some_and(|t| t != "SUCCESS"))
+                    }) {
+                        self.receipt_retry_at = self.clock + 30.;
+                        tx.wake_after(std::time::Duration::from_secs(30));
+                        return;
+                    }
+                    if let Some(c) = self.conversations.iter_mut().find(|c| c.id == peer) {
+                        for m in &mut c.messages {
+                            if ids.contains(&m.id) {
+                                m.read_receipt_sent = true;
                             }
                         }
                     }
+                    self.dirty = true;
                 }
-                Pending::Sync => {}
             }
         } else if v["method"] == "receive" {
-            let params = &v["params"];
-            let envelope = params
-                .get("envelope")
-                .or_else(|| params.get("result").and_then(|r| r.get("envelope")));
-            if let Some(e) = envelope {
-                match e["syncMessage"]["type"].as_str() {
-                    Some("CONTACTS_SYNC") => {
-                        self.request("listContacts", json!({}), Pending::Contacts);
-                    }
-                    Some("GROUPS_SYNC") => {
-                        self.request("listGroups", json!({}), Pending::Groups);
-                    }
-                    _ => {}
-                }
-            }
-            let Some(m) = model::incoming(&v) else {
-                return;
-            };
-            let index = self
-                .conversations
-                .iter()
-                .position(|c| c.id == m.conversation)
-                .unwrap_or_else(|| {
-                    self.conversations.push(Conversation::new(
-                        m.conversation.clone(),
-                        m.name.clone(),
-                        m.group,
-                    ));
-                    self.conversations.len() - 1
-                });
-            let c = &mut self.conversations[index];
-            if c.messages
-                .iter()
-                .any(|x| x.timestamp == m.timestamp && x.outgoing == m.outgoing && x.body == m.body)
-            {
-                return;
-            }
-            c.messages.push(Message {
-                id: m.timestamp,
-                body: m.body,
-                outgoing: m.outgoing,
-                timestamp: m.timestamp,
-                delivery: Delivery::Sent,
-            });
-            if self.selected.as_ref() != Some(&c.id) && !m.outgoing {
-                c.unread += 1;
-            } else {
-                tx.scroll_to_bottom("messages");
-            }
+            self.receive(&v, tx);
         }
+        self.persist();
     }
     fn delivery(&mut self, peer: &str, id: u64, d: Delivery, timestamp: u64) {
         if let Some(m) = self
@@ -366,9 +410,25 @@ impl State {
             .find(|c| c.id == peer)
             .and_then(|c| c.messages.iter_mut().find(|m| m.id == id))
         {
-            m.delivery = d;
-            m.timestamp = timestamp;
+            if d == Delivery::Failed && !matches!(m.delivery, Delivery::Delivered | Delivery::Read)
+            {
+                m.delivery = d;
+            } else {
+                m.delivery.advance(d);
+            }
+            if timestamp != 0 {
+                m.timestamp = timestamp;
+            }
+            self.dirty = true;
         }
+    }
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        if self.draft_dirty {
+            self.dirty = true;
+        }
+        self.persist();
     }
 }
 fn setup(s: &mut State, wake: rune::Waker) {
@@ -378,8 +438,9 @@ fn setup(s: &mut State, wake: rune::Waker) {
         s.connect();
     }
 }
-fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
-    let mut changed = false;
+fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
+    s.clock = now;
+    let mut changed = s.poll_history(tx) | s.poll_timers(tx);
     loop {
         let event = s.bridge.as_ref().and_then(|b| b.events.try_recv().ok());
         match event {
@@ -393,16 +454,21 @@ fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 s.bridge = None;
                 s.qr = None;
                 s.linking = false;
-                let pending = std::mem::take(&mut s.pending);
-                for (_, p) in pending {
-                    if let Pending::Send(peer, mid) = p {
-                        s.delivery(&peer, mid, Delivery::Failed, 0);
-                    }
+                s.pending.clear();
+                s.typing_outgoing = None;
+                s.schedule_reconnect();
+                if let Some(at) = s.reconnect_at {
+                    tx.wake_after(std::time::Duration::from_secs_f64(
+                        (at - s.clock).max(0.001),
+                    ));
                 }
                 return true;
             }
             None => break,
         }
+    }
+    if s.dirty {
+        s.persist();
     }
     changed
 }
@@ -426,14 +492,24 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 fn main() {
-    rune::run(AppSpec {
+    rune::App::new(AppSpec {
         on_key: Some(on_key),
         setup: Some(setup),
         poll: Some(poll),
         min_size: Some((760.0, 560.0)),
         scenes: ui::SCENES,
         ..AppSpec::new("Signal Rune", (1120.0, 760.0), State::default, ui::view)
-    });
+    })
+    .on_focus(|s, focused, _| {
+        s.window_focused = focused;
+        if !focused {
+            s.stop_typing();
+        } else {
+            s.mark_selected_read();
+            s.persist();
+        }
+    })
+    .run();
 }
 
 #[cfg(test)]
@@ -448,6 +524,7 @@ mod tests {
             .find(|(name, _)| *name == "chat-dark")
             .unwrap()
             .1(&mut s);
+        s.window_focused = true;
         s
     }
     #[test]
@@ -469,6 +546,7 @@ mod tests {
             outgoing: true,
             timestamp: 0,
             delivery: Delivery::Pending,
+            ..Message::default()
         });
         s.pending.insert(999, Pending::Send("demo-0".into(), 999));
         s.event(
@@ -479,7 +557,7 @@ mod tests {
             s.conversations[0].messages.last().unwrap().delivery,
             Delivery::Failed
         );
-        assert!(!s.error.unwrap().contains("sensitive payload"));
+        assert!(!s.error.as_ref().unwrap().contains("sensitive payload"));
     }
     #[test]
     fn send_result_failure_is_not_success() {
@@ -502,12 +580,14 @@ mod tests {
         assert_eq!(c.unread, 1);
     }
     #[test]
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "State has a flushing Drop implementation and cannot use struct update syntax"
+    )]
     fn link_expiry_clears_qr_and_allows_retry() {
-        let mut s = State {
-            linking: true,
-            qr: qrcode::QrCode::new("fixture").ok(),
-            ..State::default()
-        };
+        let mut s = State::default();
+        s.linking = true;
+        s.qr = qrcode::QrCode::new("fixture").ok();
         s.pending.insert(1, Pending::Finish);
         s.event(json!({"id":1,"error":{"code":-1}}), &mut Tx::default());
         assert!(!s.linking);

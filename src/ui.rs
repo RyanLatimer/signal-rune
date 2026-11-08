@@ -37,6 +37,29 @@ static BACK: Icon = Icon {
     view: 24.,
     body: r#"<path d="m14 5-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.7"/>"#,
 };
+static PIN: Icon = Icon {
+    name: "pin",
+    view: 24.,
+    body: r#"<path d="m9 3 6 0-1 7 4 4v2H6v-2l4-4-1-7Zm3 13v6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+};
+static ARCHIVE: Icon = Icon {
+    name: "archive",
+    view: 24.,
+    body: r#"<path d="M4 8h16v12H4V8ZM3 3h18v5H3V3Zm6 9h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+};
+fn typing_label(c: &Conversation) -> Option<String> {
+    if c.typing.is_empty() {
+        return None;
+    }
+    let mut names: Vec<_> = c.typing.values().map(|p| p.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    Some(match names.len() {
+        1 => format!("{} is typing…", names[0]),
+        2 => format!("{} and {} are typing…", names[0], names[1]),
+        _ => format!("{} people are typing…", names.len()),
+    })
+}
 fn color(s: &str) -> Color {
     rune::color::hex(s).unwrap_or(Color::BLACK)
 }
@@ -157,14 +180,34 @@ fn rail(s: &State, t: &Theme) -> El {
                 })
         })
         .child(icon_button("settings", "Settings", &SETTINGS, t, |s| {
-            s.settings = !s.settings
+            s.settings = !s.settings;
+            s.mark_selected_read();
+            s.persist();
         }))
 }
 fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
     let query = s.search.text.to_lowercase();
     let mut list = col().w_full().gap(2.);
     let mut count = 0;
-    for (i, c) in s.conversations.iter().enumerate() {
+    let mut conversations: Vec<_> = s
+        .conversations
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.archived == s.show_archived)
+        .collect();
+    conversations.sort_by(|(_, a), (_, b)| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then_with(|| {
+                b.messages
+                    .last()
+                    .map(|m| m.timestamp)
+                    .unwrap_or(0)
+                    .cmp(&a.messages.last().map(|m| m.timestamp).unwrap_or(0))
+            })
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    for (i, c) in conversations {
         if !query.is_empty()
             && !c.name.to_lowercase().contains(&query)
             && !c.id.to_lowercase().contains(&query)
@@ -178,17 +221,18 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
         count += 1;
         let selected = s.selected.as_ref() == Some(&c.id);
         let id = c.id.clone();
-        let preview = c
-            .messages
-            .last()
-            .map(|m| {
-                format!(
-                    "{}{}",
-                    if m.outgoing { "You: " } else { "" },
-                    m.body.replace('\n', " ")
-                )
-            })
-            .unwrap_or_else(|| "Start a conversation".into());
+        let preview = typing_label(c).unwrap_or_else(|| {
+            c.messages
+                .last()
+                .map(|m| {
+                    format!(
+                        "{}{}",
+                        if m.outgoing { "You: " } else { "" },
+                        m.body.replace('\n', " ")
+                    )
+                })
+                .unwrap_or_else(|| "Start a conversation".into())
+        });
         list = list.child(
             row()
                 .key(format!("conversation-{i}"))
@@ -221,7 +265,19 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
                             row()
                                 .w_full()
                                 .justify_between()
-                                .child(label(&c.name, 14., 600., t.fg).max_w(155.).truncate())
+                                .child(
+                                    row()
+                                        .gap(4.)
+                                        .center_y()
+                                        .child(if c.pinned > 0 {
+                                            icon(&PIN, 12.).color(t.muted)
+                                        } else {
+                                            el()
+                                        })
+                                        .child(
+                                            label(&c.name, 14., 600., t.fg).max_w(155.).truncate(),
+                                        ),
+                                )
                                 .child(label(
                                     c.messages
                                         .last()
@@ -261,7 +317,12 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
                 .px(12.)
                 .center_y()
                 .justify_between()
-                .child(label("Chats", 22., 650., t.fg))
+                .child(label(
+                    if s.show_archived { "Archived" } else { "Chats" },
+                    22.,
+                    650.,
+                    t.fg,
+                ))
                 .child(icon_button("new-message", "New message", &EDIT, t, |s| {
                     s.new_chat = true;
                     s.recipient.focused = true;
@@ -288,6 +349,25 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
                 .child(list),
         )
         .child(
+            Button::new(if s.show_archived {
+                "Back to chats".to_string()
+            } else {
+                format!(
+                    "Archived ({})",
+                    s.conversations.iter().filter(|c| c.archived).count()
+                )
+            })
+            .variant(ButtonVariant::Ghost)
+            .on_press(|s: &mut State| {
+                s.show_archived = !s.show_archived;
+                s.selected = None;
+                s.dirty = true;
+                s.persist();
+            })
+            .build(k)
+            .key("archived-chats"),
+        )
+        .child(
             row()
                 .h(38.)
                 .center_y()
@@ -307,17 +387,18 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
         )
 }
 fn clock(ms: u64) -> String {
-    if ms == 0 {
-        String::new()
-    } else {
-        format!("{:02}:{:02}", (ms / 3_600_000) % 24, (ms / 60_000) % 60)
-    }
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .filter(|_| ms > 0)
+        .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_default()
 }
 fn message(m: &Message, t: &Theme, i: usize, max_width: f32) -> El {
     let status = if m.outgoing {
         match m.delivery {
             Delivery::Pending => "Sending…",
             Delivery::Sent => "Sent",
+            Delivery::Delivered => "Delivered",
+            Delivery::Read => "Read",
             Delivery::Failed => "Failed · copy to retry",
         }
     } else {
@@ -347,7 +428,22 @@ fn message(m: &Message, t: &Theme, i: usize, max_width: f32) -> El {
                 )
                 .child(
                     label(
-                        format!("{}  {}", clock(m.timestamp), status),
+                        format!(
+                            "{}  {}{}",
+                            clock(m.timestamp),
+                            status,
+                            if m.receipts.len() > 1 {
+                                format!(
+                                    " · {}",
+                                    m.receipts
+                                        .values()
+                                        .filter(|d| **d == Delivery::Read)
+                                        .count()
+                                )
+                            } else {
+                                String::new()
+                            }
+                        ),
                         10.,
                         400.,
                         if m.delivery == Delivery::Failed {
@@ -397,11 +493,7 @@ fn conversation(s: &State, t: &Theme, k: &Kit, max_width: f32) -> El {
     };
     let mut messages = col().w_full().px(28.).py(20.).gap(10.);
     messages = messages.child(row().w_full().justify_center().py(8.).child(label(
-        if s.demo {
-            "Today"
-        } else {
-            "This session · times in UTC"
-        },
+        if s.demo { "Today" } else { "Messages" },
         11.,
         500.,
         t.muted,
@@ -421,17 +513,35 @@ fn conversation(s: &State, t: &Theme, k: &Kit, max_width: f32) -> El {
     for (i, m) in c.messages.iter().enumerate() {
         messages = messages.child(message(m, t, i, max_width));
     }
+    if let Some(typing) = typing_label(c) {
+        messages = messages.child(
+            row()
+                .key("typing-indicator")
+                .gap(8.)
+                .center_y()
+                .child(
+                    el().size(34., 24.)
+                        .radius(12.)
+                        .fill(t.incoming)
+                        .center()
+                        .child(label("•••", 12., 600., t.muted)),
+                )
+                .child(label(typing, 11., 400., t.muted)),
+        );
+    }
+    let pin_id = c.id.clone();
     col().key("conversation").grow(1.).min_w(0.).h_full()
         .child(row().h(72.).w_full().px(24.).gap(12.).center_y().border_sides([0.,0.,1.,0.],t.line)
             .child(avatar(&c.name,38.,s.conversations.iter().position(|x|x.id==c.id).unwrap_or(0)))
-            .child(col().gap(4.).grow(1.).child(label(&c.name,15.,600.,t.fg)).child(label(if c.group{"Group conversation"}else{"Signal conversation"},11.,400.,t.muted)))
-            .child(icon(&LOCK,16.).color(t.muted)))
-        .child(col().key("messages").grow(1.).min_h(0.).w_full().scroll(ScrollSpec{stick_bottom:true}).child(messages))
+            .child(col().gap(4.).grow(1.).min_w(0.).child(label(&c.name,15.,600.,t.fg).truncate()).child(label(if c.blocked {"Blocked"} else if c.group{"Group conversation"}else{"Signal conversation"},11.,400.,t.muted)))
+            .child(icon_button("pin-conversation", if c.pinned > 0 { "Unpin conversation" } else { "Pin conversation" }, &PIN, t, move |s| s.toggle_pin(&pin_id)))
+            .child(icon_button("archive-conversation", if c.archived { "Unarchive conversation" } else { "Archive conversation" }, &ARCHIVE, t, |s| s.archive_selected())))
+        .child(col().key("messages").grow(1.).min_h(0.).w_full().scroll(ScrollSpec{stick_bottom:true}).on_at_bottom(|s: &mut State, at| { s.messages_at_bottom = at; if at { s.mark_selected_read(); s.persist(); } }).child(messages))
         .child(col().w_full().px(20.).py(16.).gap(8.)
             .child(row().w_full().gap(10.).center_y()
-                .child(TextInput::new(&s.composer).label("Message").placeholder(if s.demo {"Sample preview · sending is disabled"}else{"Message"}).height(44.).on_edit(|s:&mut State|&mut s.composer).on_submit(|s:&mut State,tx|s.send(tx)).build(k).key("composer").grow(1.).min_w(0.))
+                .child(TextInput::new(&s.composer).label("Message").placeholder(if s.demo {"Sample preview · sending is disabled"}else{"Message"}).height(44.).on_edit(|s:&mut State|&mut s.composer).on_change(|s: &mut State, tx| s.composer_changed(tx)).on_submit(|s:&mut State,tx|s.send(tx)).build(k).key("composer").grow(1.).min_w(0.))
                 .child(el().key("send").role("button").label("Send message").focusable(true).size(44.,44.).radius(22.).fill(t.blue).disabled(s.demo || s.composer.text.trim().is_empty() || s.bridge.is_none()).on_press_tx(|s:&mut State,tx|s.send(tx)).center().child(icon(&SEND,22.).color(Color::WHITE))))
-            .child(label(if s.demo{"Preview uses fictional messages. Connect your phone to send real messages."}else{"Enter to send · Text messages only in this build"},10.,400.,t.muted).self_center()))
+            .child(label(if s.demo{"Preview uses fictional messages. Connect your phone to send real messages."}else{"Enter to send · End-to-end encrypted"},10.,400.,t.muted).self_center()))
 }
 fn linking(s: &State, t: &Theme, k: &Kit, compact: bool) -> El {
     let mut qr = el()
@@ -557,14 +667,17 @@ fn settings(s: &State, t: &Theme, k: &Kit) -> El {
     col().grow(1.).h_full().min_h(0.).scroll(ScrollSpec { stick_bottom: false }).child(col().w_full().padding(32.).gap(24.)
         .child(row().gap(12.).center_y().child(icon_button("back","Back to chats",&BACK,t,|s|s.settings=false)).child(label("Settings",24.,600.,t.fg)))
         .child(label("Appearance",16.,600.,t.fg))
-        .child(Button::new(if s.dark{"Switch to light theme"}else{"Switch to dark theme"}).on_press(|s:&mut State|s.dark = !s.dark).build(k).key("theme-toggle"))
+        .child(Button::new(if s.dark{"Switch to light theme"}else{"Switch to dark theme"}).on_press(|s:&mut State|{ s.dark = !s.dark; s.dirty = true; s.persist(); }).build(k).key("theme-toggle"))
         .child(el().h(1.).w_full().fill(t.line))
         .child(label("Connection",16.,600.,t.fg)).child(label(&s.status,13.,400.,t.muted))
         .child(label(s.account.as_deref().unwrap_or("No linked account"),13.,400.,t.fg).selectable(true))
         .child(Button::new("Retry connection").disabled(s.demo).on_press(|s:&mut State|s.connect()).build(k).key("reconnect"))
+        .child(label("History",16.,600.,t.fg))
+        .child(label(format!("Encrypted on this device · {}", s.history_protection),12.,400.,t.muted).wrap())
+        .child(label("Typing indicators and read receipts follow the privacy settings on your phone. Read state syncs between your linked devices.",12.,400.,t.muted).max_w(570.).wrap())
         .child(label("About Signal Rune",16.,600.,t.fg))
         .child(label("0.1.0 · Experimental native client\nRune + rune-kit · Signal transport by signal-cli\nNot affiliated with Signal Messenger LLC.",13.,400.,t.muted).wrap())
-        .child(label("Messages are kept in memory for this session. The engine stores identity keys and contacts in your application data directory. This build does not provide encrypted message history, calls, attachments, stories, or disappearing messages. Do not use it for sensitive conversations.",12.,400.,t.muted).max_w(570.).wrap()))
+        .child(label("Messages, drafts, pins and read state are stored in authenticated encrypted history on this device. Account keys and contacts are managed by the Signal engine. Calls, attachments, stories and disappearing-message support are being implemented.",12.,400.,t.muted).max_w(570.).wrap()))
 }
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let t = Theme::new(s.dark);
@@ -735,6 +848,7 @@ fn demo(s: &mut State) {
             outgoing: *out,
             timestamp: 1_800_000_000_000 + i as u64 * 60_000,
             delivery: Delivery::Sent,
+            ..Message::default()
         });
     }
     for (i, c) in s.conversations.iter_mut().enumerate().skip(1) {
@@ -752,6 +866,7 @@ fn demo(s: &mut State) {
             outgoing: false,
             timestamp: 1_800_000_000_000 - i as u64 * 1_800_000,
             delivery: Delivery::Sent,
+            ..Message::default()
         });
     }
     s.conversations[1].unread = 3;
@@ -760,6 +875,34 @@ fn demo(s: &mut State) {
 }
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("typing", |s| {
+        demo(s);
+        s.conversations[0].typing.insert(
+            "demo-peer".into(),
+            crate::model::TypingPresence {
+                name: "Alex Morgan".into(),
+                until: 100.,
+            },
+        );
+    }),
+    ("receipts", |s| {
+        demo(s);
+        let messages = &mut s.conversations[0].messages;
+        messages[1].delivery = Delivery::Sent;
+        messages[4].delivery = Delivery::Delivered;
+        messages[6].delivery = Delivery::Read;
+    }),
+    ("pinned", |s| {
+        demo(s);
+        s.conversations[2].pinned = 2;
+        s.conversations[4].pinned = 1;
+    }),
+    ("archived", |s| {
+        demo(s);
+        s.conversations[1].archived = true;
+        s.show_archived = true;
+        s.selected = None;
+    }),
     ("long-message", |s| {
         demo(s);
         s.conversations[0].messages[0].body = "A".repeat(200);

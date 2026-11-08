@@ -11,6 +11,10 @@ This repository is a working first implementation, not the completed exact clone
 - Direct and group text send, incoming text and sent-message sync events.
 - Pending/sent/failed delivery states (sent means accepted by the engine, not read by the recipient).
 - Incoming replay deduplication, unread counts, conversation/message search, per-conversation drafts.
+- Encrypted durable history and drafts, account isolation, authenticated records, atomic transactions and keychain integration. Linux reports its private-key-file fallback when no secret service is available.
+- Durable outbox and automatic reconnect, original-timestamp retries, phone sent/read-state reconciliation and phone-number/ACI alias merging.
+- Typing start/refresh/stop/timeout, delivery/read receipt state, foreground/read gating and phone-controlled receipt privacy.
+- Durable pinned conversations and local archive controls.
 - New recipient chat by international phone number or account UUID.
 - Dark/light appearance, native keyboard-editable inputs, selectable message text, scrollable conversations.
 - Settings, connection recovery and errors, accessible control names and keyboard shortcuts.
@@ -18,11 +22,11 @@ This repository is a working first implementation, not the completed exact clone
 
 ## Not implemented / not equivalent to Signal Desktop
 
-- Phone history transfer, encrypted durable message database, durable drafts and preferences.
+- Phone history transfer and complete cross-device conversation metadata synchronization.
 - Audio/video calls, screen sharing, attachments, voice notes, stickers, reactions, quotes, edit/delete, stories.
 - Disappearing-message lifecycle and view-once support. Their message contents are excluded from this UI.
 - Safety-number display/verification and trust management. Identity failures are errors, never auto-trusted.
-- Block management, group administration, typing/read receipts, desktop notifications, tray, auto-update.
+- Block management, group administration, desktop notifications, tray, auto-update.
 - Full localization, exact icon/spacing parity, platform-specific menu integration, comprehensive accessibility audit.
 - Signed/notarized installers, updater signing and release management.
 - Full endpoint and metadata redaction audit, account migration, database recovery, linked account selection.
@@ -30,6 +34,8 @@ This repository is a working first implementation, not the completed exact clone
 ## Validation and remaining release gates
 
 Automated tests cover message-envelope parsing, groups, numberless accounts, failed send semantics, provisioning expiry, replay deduplication, draft retention, and native pointer actions. The visual harness renders ten states at 760×560, 1120×760 and 1440×900, saves PNGs/trees, checks named controls and bounds, and fails on Rune warnings. An independent OpenCV decoder reads the dense QR fixture from screenshots at all three sizes. Palette tests enforce at least 4.5:1 text contrast in both themes. This is layout evidence, not a pixel-exact comparison with official Signal Desktop.
+
+The user has confirmed phone pairing and basic message exchange. The live cross-device cases in the parity matrix still require verification.
 
 A live signal-cli 0.14.10 + Java 25 smoke test has verified `listAccounts` and a valid `sgnl://linkdevice` URI against the Signal service, using a separate disposable local directory. No user account or phone was accessed.
 
@@ -55,3 +61,5 @@ The repository and CI artifacts can be public during development. They must not 
 - Linux release build and bundled Java/engine `--version` smoke test: passed.
 
 The checked-in design report and representative screenshots use fictional data only. CI evidence belongs to each run's exact commit and is available as the `design-evidence` artifact. Neither automated layout checks nor these manual inspections establish exact visual parity with Signal Desktop.
+
+The active, versioned feature inventory is [PARITY.md](PARITY.md). Current local foundation validation: 27 tests, strict Clippy, and 42 native renders passed. Full client parity remains in progress.
