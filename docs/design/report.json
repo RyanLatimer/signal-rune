@@ -1,0 +1,242 @@
+[
+  {
+    "scene": "chat-dark",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "chat-dark",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "chat-dark",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "chat-light",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "chat-light",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "chat-light",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "link-dark",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "link-dark",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "link-dark",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "link-light",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "link-light",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "link-light",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "settings",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "settings",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "settings",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "new-message",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "new-message",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "new-message",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "empty",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "empty",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "empty",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "error",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "error",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "error",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "long-message",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "long-message",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "long-message",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  },
+  {
+    "scene": "qr-preview",
+    "size": [
+      1120,
+      760
+    ],
+    "failures": []
+  },
+  {
+    "scene": "qr-preview",
+    "size": [
+      760,
+      560
+    ],
+    "failures": []
+  },
+  {
+    "scene": "qr-preview",
+    "size": [
+      1440,
+      900
+    ],
+    "failures": []
+  }
+]

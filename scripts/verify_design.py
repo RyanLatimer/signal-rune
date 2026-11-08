@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import cv2
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--binary', default='target/debug/signal-rune')
@@ -16,7 +17,7 @@ for scene in scenes:
     for width, height in [(1120, 760), (760, 560), (1440, 900)]:
         name = f'{scene}-{width}x{height}'
         tree = out / f'{name}.json'
-        run = subprocess.run([args.binary, '--scene', scene, '--size', f'{width}x{height}', '--scale', '1', '--snap', str(out / f'{name}.png'), '--tree', str(tree)], capture_output=True, text=True, timeout=60)
+        run = subprocess.run([args.binary, '--scene', scene, '--size', f'{width}x{height}', '--scale', '1', '--at', '1', '--snap', str(out / f'{name}.png'), '--tree', str(tree)], capture_output=True, text=True, timeout=60)
         if run.returncode:
             raise SystemExit(run.stderr)
         data = json.loads(tree.read_text())
@@ -30,7 +31,7 @@ for scene in scenes:
         if scene == 'settings':
             critical = ['back', 'theme-toggle']
         if scene.startswith('link') or scene == 'qr-preview':
-            critical += ['qr-placeholder' if scene != 'qr-preview' else 'link-qr']
+            critical += ['link-device', 'qr-placeholder' if scene != 'qr-preview' else 'link-qr']
         for key in critical:
             if key not in elements:
                 failures.append(f'Missing {key}')
@@ -44,6 +45,11 @@ for scene in scenes:
                     x, y, w, h = e['rect']
                     if x < 377 or x+w > width+1:
                         failures.append(f'Message overflows conversation: {e["rect"]}')
+        if scene == 'qr-preview':
+            decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(cv2.imread(str(out / f'{name}.png')))
+            expected = 'https://example.invalid/signal-rune-design-fixture?payload=' + 'sample-' * 16
+            if decoded != expected:
+                failures.append('Rendered QR code did not decode to the expected fixture')
         results.append({'scene': scene, 'size': [width,height], 'failures': failures})
 (out / 'report.json').write_text(json.dumps(results, indent=2))
 failures = [r for r in results if r['failures']]

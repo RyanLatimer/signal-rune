@@ -1,5 +1,5 @@
 use crate::{Conversation, Delivery, Message, State};
-use rune::{Color, Cx, El, Icon, ScrollSpec, Shape, TextStyle, canvas, col, el, icon, row, text};
+use rune::{Color, Cx, El, Icon, ScrollSpec, TextStyle, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed, TextInput};
 
 static CHAT: Icon = Icon {
@@ -75,7 +75,7 @@ impl Theme {
             hover: color(c[6]),
             selected: color(c[7]),
             incoming: color(c[8]),
-            blue: color("#3a76f0"),
+            blue: color("#3269db"),
         }
     }
     fn kit(&self) -> Kit {
@@ -353,7 +353,7 @@ fn message(m: &Message, t: &Theme, i: usize, max_width: f32) -> El {
                         if m.delivery == Delivery::Failed {
                             color("#ffe0c9")
                         } else if m.outgoing {
-                            color("#edf2ff")
+                            Color::WHITE
                         } else {
                             t.muted
                         },
@@ -445,19 +445,23 @@ fn linking(s: &State, t: &Theme, k: &Kit, compact: bool) -> El {
         let width = code.width();
         let unit = (232. / (width + 8) as f32).floor();
         let side = (width + 8) as f32 * unit;
-        let mut shape = Shape::new();
+        // A raster avoids antialiased seams between adjacent QR modules.
+        let size = side as usize;
+        let mut rgba = vec![255u8; size * size * 4];
         for y in 0..width {
             for x in 0..width {
                 if code[(x, y)] == qrcode::Color::Dark {
-                    let x = (x + 4) as f32 * unit;
-                    let y = (y + 4) as f32 * unit;
-                    shape = shape.fill(
-                        vec![[x, y], [x + unit, y], [x + unit, y + unit], [x, y + unit]],
-                        Color::BLACK,
-                    );
+                    for py in (y + 4) * unit as usize..(y + 5) * unit as usize {
+                        for px in (x + 4) * unit as usize..(x + 5) * unit as usize {
+                            let offset = (py * size + px) * 4;
+                            rgba[offset..offset + 3].fill(0);
+                        }
+                    }
                 }
             }
         }
+        let pixels = rune::Pixels::new();
+        pixels.set(size as u32, size as u32, rgba);
         qr = el()
             .key("link-qr")
             .label("Scan this QR code using Signal Linked Devices on your phone")
@@ -465,7 +469,7 @@ fn linking(s: &State, t: &Theme, k: &Kit, compact: bool) -> El {
             .center()
             .fill(Color::WHITE)
             .radius(12.)
-            .child(canvas(shape).size(side, side));
+            .child(el().pixels(&pixels).size(side, side));
     }
     let mut panel = col()
         .max_w(660.)
@@ -764,7 +768,11 @@ pub const SCENES: &[Scene] = &[
         s.demo = true;
         s.linking = true;
         s.status = "Design fixture — not a usable device link".into();
-        s.qr = qrcode::QrCode::new("https://example.invalid/signal-rune-design-fixture").ok();
+        s.qr = qrcode::QrCode::new(format!(
+            "https://example.invalid/signal-rune-design-fixture?payload={}",
+            "sample-".repeat(16)
+        ))
+        .ok();
     }),
     ("chat-dark", demo),
     ("chat-light", |s| {
@@ -794,3 +802,24 @@ pub const SCENES: &[Scene] = &[
         s.error=Some("Signal engine could not start. Install signal-cli 0.14.10 and Java 25, then retry connection.".into());
     }),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn normal_text_palette_meets_wcag_aa_contrast() {
+        let contrast = |a: Color, b: Color| {
+            let a = a.luminance();
+            let b = b.luminance();
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        };
+        for dark in [false, true] {
+            let t = Theme::new(dark);
+            for bg in [t.bg, t.sidebar, t.rail, t.incoming, t.selected] {
+                assert!(contrast(t.fg, bg) >= 4.5);
+                assert!(contrast(t.muted, bg) >= 4.5);
+            }
+            assert!(contrast(Color::WHITE, t.blue) >= 4.5);
+        }
+    }
+}

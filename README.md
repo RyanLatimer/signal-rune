@@ -4,6 +4,10 @@ An **experimental, independent native desktop client for Signal**, written in Ru
 
 **This is not yet an exact clone or a production-ready replacement.** See [parity and validation](docs/STATUS.md) for implemented features, limitations, and the release gate. It is not affiliated with Signal Messenger LLC.
 
+![Native dark appearance with fictional sample messages](docs/design/chat-dark.png)
+
+[Light appearance](docs/design/chat-light.png) · [Linking design fixture](docs/design/linking-fixture.png) · [30-scene layout report](docs/design/report.json)
+
 ## Downloads
 
 Open [GitHub Actions → Desktop builds](https://github.com/RyanLatimer/signal-rune/actions/workflows/build.yml), choose a successful run, and download its platform artifact:
@@ -50,6 +54,7 @@ On Windows set `SIGNAL_RUNE_CLI` to its `signal-cli.bat` launcher. Bundled packa
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+python3 -m pip install -r requirements-design.txt
 python3 scripts/verify_design.py --binary target/debug/signal-rune
 ```
 

@@ -107,6 +107,30 @@ pub fn incoming(v: &Value) -> Option<Incoming> {
             .unwrap_or(0),
     })
 }
+/// Canonicalize display-formatted international numbers without guessing a country.
+pub fn recipient_id(raw: &str) -> Option<String> {
+    if raw.starts_with('+') {
+        let number: String = raw
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace() && !matches!(c, '-' | '(' | ')'))
+            .collect();
+        let digits = &number[1..];
+        return (digits.len() >= 7
+            && digits.len() <= 15
+            && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(number);
+    }
+    let valid_uuid = raw.len() == 36
+        && raw.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        });
+    valid_uuid.then(|| raw.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +150,33 @@ mod tests {
         let m = incoming(&json!({"params":{"result":{"envelope":{"syncMessage":{"sentMessage":{"destinationUuid":"bob","message":"Hello","timestamp":43}}}}}})).unwrap();
         assert_eq!(m.conversation, "bob");
         assert!(m.outgoing);
+    }
+    #[test]
+    fn recipient_validation_normalizes_numbers_and_rejects_ambiguous_input() {
+        assert_eq!(
+            recipient_id("+1 (202) 555-0123").as_deref(),
+            Some("+12025550123")
+        );
+        assert_eq!(
+            recipient_id("11111111-1111-4111-8111-111111111111").as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert!(recipient_id("2025550123").is_none());
+        assert!(recipient_id("+123abc45678").is_none());
+        assert!(recipient_id("").is_none());
+    }
+    #[test]
+    fn ephemeral_content_is_not_retained() {
+        for options in [json!({"viewOnce":true}), json!({"expiresInSeconds":30})] {
+            let mut m = json!({"message":"secret","timestamp":42});
+            m.as_object_mut()
+                .unwrap()
+                .extend(options.as_object().unwrap().clone());
+            assert!(
+                incoming(&json!({"params":{"envelope":{"source":"peer","dataMessage":m}}}))
+                    .is_none()
+            );
+        }
     }
     #[test]
     fn routes_groups_and_ignores_receipts() {

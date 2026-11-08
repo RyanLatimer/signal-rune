@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import plistlib
+import platform as host_platform
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,10 @@ root = Path(__file__).resolve().parents[1]
 dist = root / 'dist'
 dist.mkdir(exist_ok=True)
 platform = {'darwin': 'macos-arm64', 'win32': 'windows-x64', 'linux': 'linux-x64'}[sys.platform]
+expected = 'arm64' if sys.platform == 'darwin' else 'x86_64'
+actual = host_platform.machine().lower().replace('amd64', 'x86_64').replace('aarch64', 'arm64')
+if actual != expected:
+    raise SystemExit(f'Unexpected build architecture: {actual}; expected {expected}')
 name = f'signal-rune-{platform}'
 stage = dist / name
 if stage.exists():

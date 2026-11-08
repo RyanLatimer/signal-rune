@@ -83,7 +83,12 @@ impl State {
     }
     fn connect(&mut self) {
         self.bridge = None;
-        self.pending.clear();
+        let pending = std::mem::take(&mut self.pending);
+        for (_, p) in pending {
+            if let Pending::Send(peer, mid) = p {
+                self.delivery(&peer, mid, Delivery::Failed, 0);
+            }
+        }
         self.linking = false;
         self.qr = None;
         let Some(wake) = self.wake.clone() else {
@@ -137,10 +142,11 @@ impl State {
         self.composer.focused = true;
     }
     fn new_conversation(&mut self) {
-        let id = self.recipient.text.trim().to_string();
-        if id.is_empty() {
+        let raw = self.recipient.text.trim();
+        let Some(id) = model::recipient_id(raw) else {
+            self.error = Some("Enter a valid international phone number or account UUID.".into());
             return;
-        }
+        };
         if !self.conversations.iter().any(|c| c.id == id) {
             self.conversations
                 .insert(0, Conversation::new(id.clone(), id.clone(), false));
@@ -301,9 +307,25 @@ impl State {
                 }
                 Pending::Sync => {}
             }
-        } else if v["method"] == "receive"
-            && let Some(m) = model::incoming(&v)
-        {
+        } else if v["method"] == "receive" {
+            let params = &v["params"];
+            let envelope = params
+                .get("envelope")
+                .or_else(|| params.get("result").and_then(|r| r.get("envelope")));
+            if let Some(e) = envelope {
+                match e["syncMessage"]["type"].as_str() {
+                    Some("CONTACTS_SYNC") => {
+                        self.request("listContacts", json!({}), Pending::Contacts);
+                    }
+                    Some("GROUPS_SYNC") => {
+                        self.request("listGroups", json!({}), Pending::Groups);
+                    }
+                    _ => {}
+                }
+            }
+            let Some(m) = model::incoming(&v) else {
+                return;
+            };
             let index = self
                 .conversations
                 .iter()

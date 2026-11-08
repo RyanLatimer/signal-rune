@@ -29,7 +29,7 @@ This repository is a working first implementation, not the completed exact clone
 
 ## Validation and remaining release gates
 
-Automated tests cover message-envelope parsing, groups, numberless accounts, failed send semantics, provisioning expiry, replay deduplication, draft retention, and native pointer actions. The visual harness renders ten states at 760×560, 1120×760 and 1440×900, saves PNGs/trees, checks named controls and bounds, and fails on Rune warnings. This is layout evidence, not a pixel-exact comparison with official Signal Desktop.
+Automated tests cover message-envelope parsing, groups, numberless accounts, failed send semantics, provisioning expiry, replay deduplication, draft retention, and native pointer actions. The visual harness renders ten states at 760×560, 1120×760 and 1440×900, saves PNGs/trees, checks named controls and bounds, and fails on Rune warnings. An independent OpenCV decoder reads the dense QR fixture from screenshots at all three sizes. Palette tests enforce at least 4.5:1 text contrast in both themes. This is layout evidence, not a pixel-exact comparison with official Signal Desktop.
 
 A live signal-cli 0.14.10 + Java 25 smoke test has verified `listAccounts` and a valid `sgnl://linkdevice` URI against the Signal service, using a separate disposable local directory. No user account or phone was accessed.
 
@@ -43,3 +43,15 @@ Still required before a stable release:
 6. Resolve all material findings, sign/notarize installers, and only then publish a stable release.
 
 The repository and CI artifacts can be public during development. They must not be presented as a verified final product.
+
+## Local validation evidence (2026-11-07)
+
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --locked --all-targets -- -D warnings`: passed.
+- `cargo test --locked`: 13 tests passed.
+- Native GPU screenshot harness: 30 renders passed, including independent decoding of the dense QR fixture at all three sizes.
+- Manual PNG inspection: dark/light conversations, minimum-size linking and settings, QR fixture. Fixed small-window clipping and QR antialiasing seams during review.
+- Text palette: 4.5:1 contrast assertions passed in both appearances.
+- Linux release build and bundled Java/engine `--version` smoke test: passed.
+
+The checked-in design report and representative screenshots use fictional data only. CI evidence belongs to each run's exact commit and is available as the `design-evidence` artifact. Neither automated layout checks nor these manual inspections establish exact visual parity with Signal Desktop.
