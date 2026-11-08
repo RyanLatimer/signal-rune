@@ -17,12 +17,14 @@ public final class GetClientStateCommand implements JsonRpcLocalCommand {
     }
     @Override public void handleCommand(Namespace args, Manager manager, OutputWriter writer) {
         var config = manager.getConfiguration();
-        var result = Map.of(
+        var result = new java.util.HashMap<String,Object>(Map.of(
             "version", 1,
             "readReceipts", config.readReceipts().orElse(true),
             "typingIndicators", config.typingIndicators().orElse(true),
             "linkPreviews", config.linkPreviews().orElse(true),
-            "unidentifiedDeliveryIndicators", config.unidentifiedDeliveryIndicators().orElse(false));
+            "unidentifiedDeliveryIndicators", config.unidentifiedDeliveryIndicators().orElse(false)));
+        try {result.put("conversationPins", org.asamk.signal.manager.helper.RunePins.state(manager));}
+        catch(Exception ignored) {result.put("conversationPins",Map.of("supported",false));}
         switch (writer) {
             case JsonWriter json -> json.write(result);
             case PlainTextWriter text -> result.forEach((key, value) -> text.println("{}: {}", key, value));

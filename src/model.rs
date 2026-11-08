@@ -401,6 +401,7 @@ pub struct Preferences {
     pub notifications: bool,
     pub last_outgoing_timestamp: u64,
     pub next_message_id: u64,
+    pub pin_sync_initialized: bool,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -411,6 +412,7 @@ impl Default for Preferences {
             notifications: true,
             last_outgoing_timestamp: 0,
             next_message_id: 0,
+            pin_sync_initialized: false,
         }
     }
 }
@@ -442,6 +444,29 @@ pub struct SyncLedger {
     pub read_at: BTreeMap<String, BTreeMap<u64, u64>>,
     pub actions: Vec<QueuedAction>,
     pub mutations: Vec<Mutation>,
+    pub pins: Vec<PinIntent>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PinIntent {
+    pub id: u64,
+    pub conversation: String,
+    pub group: bool,
+    pub pinned: bool,
+}
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct PinState {
+    pub supported: bool,
+    pub ready: bool,
+    pub pins: Vec<RemotePin>,
+    pub count: usize,
+    pub completed: Vec<u64>,
+    pub pending: usize,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct RemotePin {
+    pub id: String,
+    pub group: bool,
 }
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()

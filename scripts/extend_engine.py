@@ -25,8 +25,9 @@ def extend(runtime: Path, source: Path):
     if test_source.exists():
         with tempfile.TemporaryDirectory(prefix='signal-rune-engine-tests-') as temporary:
             classpath = str(runtime / 'lib' / '*')
-            subprocess.run([str(javac), '--release', '25', '-cp', classpath, '-d', temporary, str(test_source)], check=True)
-            subprocess.run([str(java_home / 'bin' / ('java' + suffix)), '-ea', '-cp', temporary + os.pathsep + classpath, 'EngineExtensionTest'], check=True, timeout=60)
+            subprocess.run([str(javac), '--release', '25', '-cp', classpath, '-d', temporary, *map(str, sorted(test_source.parent.glob("*.java")))], check=True)
+            for test in sorted(test_source.parent.glob('*Test.java')):
+                subprocess.run([str(java_home / 'bin' / ('java' + suffix)), '-ea', '-cp', temporary + os.pathsep + classpath, test.stem], check=True, timeout=60)
 
 
 if __name__ == '__main__':

@@ -13,7 +13,7 @@ The user has confirmed that phone pairing and basic message exchange work. That 
 | Phone sent/read sync | Implemented, replay/ordering/alias tests | Live cross-device group and direct tests |
 | Typing | Send/start/refresh/stop, foreground gating, receive timeout, engine-enforced phone privacy | Live phone/client verification |
 | Delivery/read receipts | Monotonic per-recipient state, foreground-only read and linked read sync | Live direct/group and privacy-setting verification |
-| Conversation pins/archive | Durable local controls and ordering | Cross-device metadata synchronization and context menu parity |
+| Conversation pins/archive | Durable pins with encrypted account-storage sync, ordered retries and remote acknowledgements; local archive controls | Live phone pin verification, archive/mute metadata sync and context menu parity |
 | Disappearing/view-once messages | Read/send expiry, phone start-time sync, offline/restart purge and replay tombstones; view-once excluded | Timer controls implemented; timer notices, live expiry tests and view-once media lifecycle remain |
 | Replies/reactions/edit/delete | Native menus, quotes, edits/history, reactions, local/delete-for-everyone, durable retries, authenticated sync mutations | Live cross-device direct/group verification, full emoji picker |
 | Attachments/media/voice notes | File picker/drop, encrypted cache, file-only send, PNG/JPEG previews and native Save dialog | Paste, full-size viewer, remaining media formats, playback/recording, live integration |

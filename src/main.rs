@@ -3,6 +3,7 @@ mod conversations;
 mod expiration;
 mod media;
 mod model;
+mod pins;
 mod storage;
 mod sync;
 mod transport;
@@ -31,6 +32,8 @@ enum Pending {
     GroupUpdate(String),
     CreatedGroup,
     JoinedGroup,
+    Pin(u64),
+    PinSync,
 }
 pub struct State {
     bridge: Option<transport::Bridge>,
@@ -94,6 +97,10 @@ pub struct State {
     new_group: bool,
     group_name_input: TextEdit,
     group_participants: Vec<String>,
+    pin_state: Option<model::PinState>,
+    pin_accepted: std::collections::HashSet<u64>,
+    pin_retry_due: f64,
+    pin_sync_error: Option<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -159,6 +166,10 @@ impl Default for State {
             new_group: false,
             group_name_input: TextEdit::new(""),
             group_participants: vec![],
+            pin_state: None,
+            pin_accepted: std::collections::HashSet::new(),
+            pin_retry_due: 0.,
+            pin_sync_error: None,
         }
     }
 }
@@ -185,6 +196,8 @@ impl State {
         Some(id)
     }
     fn connect(&mut self) {
+        self.pin_accepted.clear();
+        self.pin_retry_due = 0.;
         if let Some(panel) = &mut self.identity_panel {
             panel.loading = false;
             panel.saving = false;
@@ -380,6 +393,12 @@ impl State {
                 return;
             };
             if v.get("error").is_some() {
+                if matches!(p, Pending::Pin(_) | Pending::PinSync) {
+                    self.pin_sync_error=Some("Pin sync is waiting for the bundled Signal engine and a connection. Local pins have been kept.".into());
+                    self.pin_retry_due = self.clock + 30.;
+                    tx.wake_after(std::time::Duration::from_secs(30));
+                    return;
+                }
                 if self.identity_error(&p) {
                     return;
                 }
@@ -429,6 +448,8 @@ impl State {
                     self.conversation_updated(&peer, change)
                 }
                 Pending::GroupUpdate(peer) => self.group_updated(&peer, r),
+                Pending::Pin(id) => self.pin_result(id, r),
+                Pending::PinSync => {}
                 Pending::CreatedGroup | Pending::JoinedGroup => self.group_joined(r),
                 Pending::Accounts => {
                     if let Some(account) = r
@@ -521,6 +542,7 @@ impl State {
                     }
                 }
                 Pending::Configuration => {
+                    self.receive_pin_state(&r["conversationPins"]);
                     match serde_json::from_value::<model::EngineConfiguration>(r.clone()) {
                         Ok(configuration) if configuration.version == 1 => {
                             if !configuration.typing_indicators {
@@ -620,6 +642,8 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
                 changed = true;
             }
             Some(transport::Event::Stopped) => {
+                s.pin_accepted.clear();
+                s.pin_retry_due = 0.;
                 if let Some(panel) = &mut s.identity_panel {
                     panel.loading = false;
                     panel.saving = false;

@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Based on signal-cli v0.14.10; preserve pending Signal Rune pin intents during storage sync.
+package org.asamk.signal.manager.syncStorage;
+
+import org.asamk.signal.manager.helper.RunePins;
+
+import org.asamk.signal.manager.api.Contact;
+import org.asamk.signal.manager.api.PhoneNumberSharingMode;
+import org.asamk.signal.manager.api.TrustLevel;
+import org.asamk.signal.manager.storage.configuration.ConfigurationStore;
+import org.asamk.signal.manager.storage.groups.GroupInfoV1;
+import org.asamk.signal.manager.storage.groups.GroupInfoV2;
+import org.asamk.signal.manager.storage.identities.IdentityInfo;
+import org.asamk.signal.manager.storage.recipients.Recipient;
+import org.asamk.signal.manager.storage.stickers.StickerPack;
+import org.signal.core.models.ServiceId.ACI;
+import org.signal.core.models.ServiceId.PNI;
+import org.signal.core.util.UuidUtil;
+import org.whispersystems.signalservice.api.push.UsernameLinkComponents;
+import org.whispersystems.signalservice.api.storage.SignalAccountRecord;
+import org.whispersystems.signalservice.api.storage.SignalContactRecord;
+import org.whispersystems.signalservice.api.storage.SignalGroupV1Record;
+import org.whispersystems.signalservice.api.storage.SignalGroupV2Record;
+import org.whispersystems.signalservice.api.storage.SignalInstalledStickerPackRecord;
+import org.whispersystems.signalservice.internal.storage.protos.AccountRecord;
+import org.whispersystems.signalservice.internal.storage.protos.AccountRecord.UsernameLink;
+import org.whispersystems.signalservice.internal.storage.protos.ContactRecord;
+import org.whispersystems.signalservice.internal.storage.protos.ContactRecord.IdentityState;
+import org.whispersystems.signalservice.internal.storage.protos.GroupV1Record;
+import org.whispersystems.signalservice.internal.storage.protos.GroupV2Record;
+import org.whispersystems.signalservice.internal.storage.protos.InstalledStickerPackRecord;
+
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.Optional;
+
+import okio.ByteString;
+
+import static org.signal.core.util.StringExtensionsKt.emptyIfNull;
+
+public final class StorageSyncModels {
+
+    private final static boolean useBinaryId = true;
+    private final static boolean useStringId = true;
+
+    private StorageSyncModels() {
+    }
+
+    public static AccountRecord.PhoneNumberSharingMode localToRemote(PhoneNumberSharingMode phoneNumberPhoneNumberSharingMode) {
+        return switch (phoneNumberPhoneNumberSharingMode) {
+            case EVERYBODY -> AccountRecord.PhoneNumberSharingMode.EVERYBODY;
+            case CONTACTS, NOBODY -> AccountRecord.PhoneNumberSharingMode.NOBODY;
+        };
+    }
+
+    public static PhoneNumberSharingMode remoteToLocal(AccountRecord.PhoneNumberSharingMode phoneNumberPhoneNumberSharingMode) {
+        return switch (phoneNumberPhoneNumberSharingMode) {
+            case EVERYBODY -> PhoneNumberSharingMode.EVERYBODY;
+            case NOBODY -> PhoneNumberSharingMode.NOBODY;
+            case UNKNOWN -> null;
+        };
+    }
+
+    public static AccountRecord localToRemoteRecord(
+            final Connection connection,
+            ConfigurationStore configStore,
+            Recipient self,
+            UsernameLinkComponents usernameLinkComponents
+    ) throws SQLException {
+        final var builder = SignalAccountRecord.Companion.newBuilder(self.getStorageRecord());
+        if (self.getProfileKey() != null) {
+            builder.profileKey(ByteString.of(self.getProfileKey().serialize()));
+        }
+        if (self.getProfile() != null) {
+            builder.givenName(emptyIfNull(self.getProfile().getGivenName()))
+                    .familyName(emptyIfNull(self.getProfile().getFamilyName()))
+                    .avatarUrlPath(emptyIfNull(self.getProfile().getAvatarUrlPath()));
+        }
+        builder.typingIndicators(Optional.ofNullable(configStore.getTypingIndicators(connection)).orElse(true))
+                .readReceipts(Optional.ofNullable(configStore.getReadReceipts(connection)).orElse(true))
+                .sealedSenderIndicators(Optional.ofNullable(configStore.getUnidentifiedDeliveryIndicators(connection))
+                        .orElse(true))
+                .linkPreviews(Optional.ofNullable(configStore.getLinkPreviews(connection)).orElse(true))
+                .unlistedPhoneNumber(Optional.ofNullable(configStore.getPhoneNumberUnlisted(connection)).orElse(false))
+                .phoneNumberSharingMode(Optional.ofNullable(configStore.getPhoneNumberSharingMode(connection))
+                        .map(StorageSyncModels::localToRemote)
+                        .orElse(AccountRecord.PhoneNumberSharingMode.UNKNOWN))
+                .username(self.getAddress().username().orElse(""));
+        if (usernameLinkComponents != null) {
+            final var linkColor = configStore.getUsernameLinkColor(connection);
+            builder.usernameLink(new UsernameLink.Builder().entropy(ByteString.of(usernameLinkComponents.getEntropy()))
+                    .serverId(UuidUtil.toByteString(usernameLinkComponents.getServerId()))
+                    .color(linkColor == null ? UsernameLink.Color.UNKNOWN : UsernameLink.Color.valueOf(linkColor))
+                    .build());
+        }
+
+        builder.pinnedConversations(RunePins.overlay(connection, builder.build().pinnedConversations));
+
+        return builder.build();
+    }
+
+    public static ContactRecord localToRemoteRecord(Recipient recipient, IdentityInfo identity) {
+        final var address = recipient.getAddress();
+        final var aciPresent = address.aci().isPresent();
+
+        final var builder = SignalContactRecord.Companion.newBuilder(recipient.getStorageRecord())
+                .e164(address.number().orElse(""))
+                .username(address.username().orElse(""))
+                .pniSignatureVerified(address.pni().map(PNI::isValid).orElse(false)
+                        && recipient.isPniSignatureVerified())
+                .profileKey(recipient.getProfileKey() == null
+                        ? ByteString.EMPTY
+                        : ByteString.of(recipient.getProfileKey().serialize()));
+        if (useBinaryId) {
+            builder.aciBinary(address.aci().map(ACI::toByteString).orElse(ByteString.EMPTY))
+                    .pniBinary(address.pni().map(PNI::toByteStringWithoutPrefix).orElse(ByteString.EMPTY));
+        }
+        if (useStringId) {
+            builder.aci(address.aci().map(ACI::toString).orElse(""))
+                    .pni(address.pni().map(PNI::toStringWithoutPrefix).orElse(""));
+        }
+        if (recipient.getProfile() != null) {
+            builder.givenName(emptyIfNull(recipient.getProfile().getGivenName()))
+                    .familyName(emptyIfNull(recipient.getProfile().getFamilyName()));
+        }
+        if (recipient.getContact() != null) {
+            builder.systemGivenName(emptyIfNull(recipient.getContact().givenName()))
+                    .systemFamilyName(emptyIfNull(recipient.getContact().familyName()))
+                    .systemNickname(emptyIfNull(recipient.getContact().nickName()))
+                    .nickname(getNicknameRemoteRecord(recipient.getContact()))
+                    .note(emptyIfNull(recipient.getContact().note()))
+                    .blocked(recipient.getContact().isBlocked())
+                    .blockedAtTimestamp(recipient.getContact().blockedAt())
+                    .whitelisted(recipient.getContact().isProfileSharingEnabled())
+                    .mutedUntilTimestamp(recipient.getContact().muteUntil())
+                    .hideStory(recipient.getContact().hideStory())
+                    .unregisteredAtTimestamp(recipient.getContact().unregisteredTimestamp() == null
+                            ? 0
+                            : recipient.getContact().unregisteredTimestamp())
+                    .archived(recipient.getContact().isArchived())
+                    .hidden(recipient.getContact().isHidden());
+        }
+        if (identity != null && aciPresent) {
+            builder.identityKey(ByteString.of(identity.getIdentityKey().serialize()))
+                    .identityState(localToRemote(identity.getTrustLevel()));
+        }
+        return builder.build();
+    }
+
+    private static ContactRecord.Name getNicknameRemoteRecord(final Contact contact) {
+        final var given = emptyIfNull(contact.nickNameGivenName());
+        final var family = emptyIfNull(contact.nickNameFamilyName());
+        if (given.isEmpty() && family.isEmpty()) {
+            return null;
+        }
+        return new ContactRecord.Name.Builder().given(given).family(family).build();
+    }
+
+    public static GroupV1Record localToRemoteRecord(GroupInfoV1 group) {
+        final var builder = SignalGroupV1Record.Companion.newBuilder(group.getStorageRecord());
+        builder.id(ByteString.of(group.getGroupId().serialize()));
+        builder.blocked(group.isBlocked());
+        builder.archived(group.archived);
+        builder.whitelisted(true);
+        return builder.build();
+    }
+
+    public static GroupV2Record localToRemoteRecord(GroupInfoV2 group) {
+        final var builder = SignalGroupV2Record.Companion.newBuilder(group.getStorageRecord());
+        builder.masterKey(ByteString.of(group.getMasterKey().serialize()));
+        builder.blocked(group.isBlocked());
+        builder.blockedAtTimestamp(group.getBlockedAt());
+        builder.whitelisted(group.isProfileSharingEnabled());
+        return builder.build();
+    }
+
+    public static InstalledStickerPackRecord localToRemoteRecord(StickerPack stickerPack) {
+        final var builder = SignalInstalledStickerPackRecord.Companion.newBuilder(stickerPack.storageRecord());
+        builder.packId(ByteString.of(stickerPack.packId().serialize()));
+
+        if (stickerPack.deletedTimestamp() > 0) {
+            builder.packKey(ByteString.EMPTY);
+            builder.position(0);
+            builder.deletedAtTimestamp(stickerPack.deletedTimestamp());
+        } else {
+            builder.packKey(ByteString.of(stickerPack.packKey()));
+            builder.position(stickerPack.position());
+            builder.deletedAtTimestamp(0);
+        }
+
+        return builder.build();
+    }
+
+    public static TrustLevel remoteToLocal(IdentityState identityState) {
+        return switch (identityState) {
+            case DEFAULT -> TrustLevel.TRUSTED_UNVERIFIED;
+            case UNVERIFIED -> TrustLevel.UNTRUSTED;
+            case VERIFIED -> TrustLevel.TRUSTED_VERIFIED;
+        };
+    }
+
+    private static IdentityState localToRemote(TrustLevel local) {
+        return switch (local) {
+            case TRUSTED_VERIFIED -> IdentityState.VERIFIED;
+            case UNTRUSTED -> IdentityState.UNVERIFIED;
+            default -> IdentityState.DEFAULT;
+        };
+    }
+}

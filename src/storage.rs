@@ -272,10 +272,10 @@ impl Store {
         let version: u32 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 2 {
+        if version > 3 {
             return Err("This history was created by a newer Signal Rune version; it has not been modified.".into());
         }
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); PRAGMA user_version=2;").map_err(|e| e.to_string())?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL); PRAGMA user_version=3;").map_err(|e| e.to_string())?;
         let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid history key length")?;
         let mut index =
             <Hmac<Sha256> as Mac>::new_from_slice(key).map_err(|_| "Invalid history index key")?;
@@ -579,7 +579,7 @@ mod tests {
     fn newer_schema_is_not_modified() {
         let dir = tempfile::tempdir().unwrap();
         let store = open(dir.path(), "a", &[3; 32]);
-        store.db.pragma_update(None, "user_version", 3).unwrap();
+        store.db.pragma_update(None, "user_version", 4).unwrap();
         drop(store);
         assert!(
             Store::initialize(
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            3
+            4
         );
     }
     #[test]

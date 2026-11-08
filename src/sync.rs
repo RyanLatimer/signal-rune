@@ -121,6 +121,11 @@ impl State {
                         }
                     }
                     self.sync_ledger.mutations.extend(snapshot.sync.mutations);
+                    for pin in snapshot.sync.pins {
+                        if !self.sync_ledger.pins.iter().any(|p| p.id == pin.id) {
+                            self.sync_ledger.pins.push(pin);
+                        }
+                    }
                     for (sender, messages) in snapshot.sync.read_at {
                         for (timestamp, at) in messages {
                             self.sync_ledger
@@ -176,6 +181,7 @@ impl State {
                     if generation == self.generation {
                         self.flush_outbox();
                         self.flush_actions();
+                        self.flush_pins();
                         self.flush_read_receipts(tx);
                     }
                 }
@@ -700,6 +706,10 @@ impl State {
         self.mark_selected_read();
         self.flush_outbox();
         self.flush_actions();
+        self.flush_pins();
+        if !self.sync_ledger.pins.is_empty() && self.pin_retry_due > self.clock {
+            tx.wake_after(Duration::from_secs_f64(self.pin_retry_due - self.clock));
+        }
         self.poll_media();
         let wall = model::now_ms();
         if let Some(timestamp) = self
@@ -734,20 +744,6 @@ impl State {
         let delay = 2u64.saturating_pow(self.reconnect_attempt.min(6)).min(60);
         self.reconnect_attempt += 1;
         self.reconnect_at = Some(self.clock + delay as f64);
-    }
-    pub(crate) fn toggle_pin(&mut self, peer: &str) {
-        let next = self
-            .conversations
-            .iter()
-            .map(|c| c.pinned)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        if let Some(c) = self.conversations.iter_mut().find(|c| c.id == peer) {
-            c.pinned = if c.pinned == 0 { next } else { 0 };
-            self.dirty = true;
-        }
-        self.persist();
     }
     pub(crate) fn archive_selected(&mut self) {
         self.stop_typing();

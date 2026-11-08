@@ -209,8 +209,9 @@ fn sidebar(s: &State, t: &Theme, k: &Kit) -> El {
         })
         .collect();
     conversations.sort_by(|(_, a), (_, b)| {
-        b.pinned
-            .cmp(&a.pinned)
+        (b.pinned > 0)
+            .cmp(&(a.pinned > 0))
+            .then_with(|| a.pinned.cmp(&b.pinned))
             .then_with(|| {
                 b.last_message()
                     .map(|m| m.timestamp)
@@ -1033,6 +1034,7 @@ fn settings(s: &State, t: &Theme, k: &Kit) -> El {
         .child(label(format!("Encrypted on this device · {}", s.history_protection),12.,400.,t.muted).wrap())
         .child(label(s.engine_configuration.as_ref().map(|c| format!("Phone privacy · Typing {} · Read receipts {}", if c.typing_indicators { "on" } else { "off" }, if c.read_receipts { "on" } else { "off" })).unwrap_or_else(|| "Phone privacy · Waiting for synchronized settings".into()),12.,400.,t.muted).wrap())
         .child(label(s.configuration_error.as_deref().unwrap_or("Typing indicators and read receipts follow the privacy settings on your phone. Read state syncs between your linked devices."),12.,400.,t.muted).max_w(570.).wrap())
+        .child(label(s.pin_sync_status(),12.,400.,t.muted).wrap())
         .child(label("About Signal Rune",16.,600.,t.fg))
         .child(label("0.1.0 · Experimental native client\nRune + rune-kit · Signal transport by signal-cli\nNot affiliated with Signal Messenger LLC.",13.,400.,t.muted).wrap())
         .child(label("Messages, drafts, pins and read state are stored in authenticated encrypted history on this device. Account keys and contacts are managed by the Signal engine. Phone history transfer, calls, stories and full media support remain in development.",12.,400.,t.muted).max_w(570.).wrap()))
